@@ -165,9 +165,9 @@ def codex_segment(cfg, now):
     return f"{DIM}cx{RESET} " + " ".join(chunks) if chunks else None
 
 
-def active_hold(now):
+def active_hold(now, vendor="claude"):
     """The live hold marker written by the guard hook, or None if absent/expired."""
-    marker = g.read_json(g.blocked_path())
+    marker = g.read_json(g.blocked_path(vendor))
     if not isinstance(marker, dict):
         return None
     try:
@@ -220,13 +220,21 @@ def build(data, cfg, now):
     if codex:
         segments.append(codex)
 
-    hold = active_hold(now)
-    if hold:
+    held = False
+    for vendor in g.VENDORS:
+        hold = active_hold(now, vendor)
+        if not hold:
+            continue
+        held = True
         marker, until = hold
         label = marker.get("label") or "usage"
+        if vendor != "claude":
+            label = f"{vendor} {label}"
         clock = time.strftime("%H:%M", time.localtime(until))
-        colour = BOLD + ("\033[43m\033[30m" if str(label).startswith("pace") else "\033[41m\033[97m")
+        colour = BOLD + ("\033[43m\033[30m" if "pace" in str(label) else "\033[41m\033[97m")
         segments.append(paint(f" HOLD {label} until {clock} ({g.fmt_duration(until - now)}) ", colour))
+    if held:
+        pass
     elif not cfg["enabled"]:
         segments.append(paint("guard off", DIM + YELLOW))
     elif not cfg["pace_enabled"]:

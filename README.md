@@ -36,9 +36,9 @@ the statusline at least once.
 | File | Role |
 |---|---|
 | `statusline.py` | Renders the statusline **and** caches `rate_limits` to `usage.json` |
-| `guard-hook.py` | PreToolUse hook: holds tool calls at a threshold, paces them before it |
-| `brief-hook.py` | UserPromptSubmit hook: one line of usage context at every prompt |
-| `ug` | Control CLI (`~/.local/bin/ug`) |
+| `guard-hook.py` | PreToolUse hook: holds tool calls at a threshold, paces them before it (`--vendor codex` under Codex) |
+| `brief-hook.py` | UserPromptSubmit hook: one line of usage context at every prompt (`--vendor codex` under Codex) |
+| `ug` | Control CLI (`~/.local/bin/ug`), including `ug codex install` |
 | `guardlib.py` | Shared paths, config, pace math, Codex reader, report |
 
 ## Why the statusline feeds the hooks
@@ -58,13 +58,27 @@ own `resets_at` passes.
 
 ## Codex
 
-Codex has no statusline or hook contract, but every turn's `token_count` event in
-its session log carries the rate limits the API returned. `guardlib.codex_limits`
-reads the newest log under `~/.codex/sessions`, maps `window_minutes` 300 and
-10080 onto the same 5h and 7d windows, and drops a window that has reset since
-the log was written. It shows up in `ug status`, `ug status --json`, the brief
-line and the statusline (`cx 7d 2%`). Nothing enforces anything on the Codex
-side; the point is that an agent deciding on a Codex fan-out can see the number.
+Codex CLI (0.159 and later) runs the same two hooks, so Codex sessions get the
+same threshold hold, pacing and `[usage]` line. Install with
+
+    ug codex install
+
+which adds the guard's `UserPromptSubmit` and `PreToolUse` entries to
+`~/.codex/hooks.json` and records their trust hashes in `~/.codex/config.toml`.
+Codex only runs hooks it has been told to trust, normally through a review in
+its TUI; the hash is a SHA-256 over the normalized hook definition, so the
+install step computes it and stands in for that review for these two hooks
+only. Other hooks and trust entries are left untouched. `ug codex trusted`
+exits 0 when everything is in place.
+
+Codex has no statusline, but every turn's `token_count` event in its session
+log carries the rate limits the API returned, and the hooks receive the live
+transcript's path. Each hook refreshes `codex-usage.json` from it before
+deciding, so Codex pacing works from Codex's own numbers; the `[usage]` line a
+Codex agent receives covers both vendors. Without the hooks, the newest log
+under `~/.codex/sessions` stands in for reporting, and `ug status` says which
+source it is reading. A `window_minutes` of 300 maps to 5h and 10080 to 7d; a
+window that has reset since the reading is dropped.
 
 ## Two mechanisms
 
@@ -141,6 +155,8 @@ pace hold within one poll tick.
     ug pace mode delay     or hold
     ug pace margin 7d 8    how far ahead of the pace line the window may run
     ug pace set KEY VALUE  pace_min_used_pct, pace_seconds_per_pct, pace_max_delay_seconds
+    ug codex install       add the guard's hooks to Codex and trust them
+    ug codex trusted       exit 0 when Codex has the hooks and trusts them
     ug release             release an in-progress hold now
     ug config              effective settings as JSON
 
@@ -165,7 +181,8 @@ pace hold within one poll tick.
 
 The file only needs the keys you want to override; the rest fall back to
 defaults. A corrupt file falls back to defaults entirely. Runtime state
-(`usage.json`, `state.json`, `blocked.json`) is node-local too.
+(`usage.json`, `codex-usage.json`, `state.json`, `blocked.json`, `codex-blocked.json`)
+is node-local too.
 
 ## Limitations
 
@@ -173,7 +190,8 @@ defaults. A corrupt file falls back to defaults entirely. Runtime state
   model can still reply in prose during a held turn.
 - `rate_limits` is absent until Claude Code has seen a limit from the API,
   typically after the first turn of a session. Until then the guard fails open.
-- Codex numbers are as fresh as its newest session log; `ug status` shows the age.
+- Without the Codex hooks, Codex numbers are as fresh as its newest session log;
+  `ug status` shows the age and the source.
 - Overhead is about 25ms per tool call when not pacing, and about 45ms per prompt
   for the brief.
 

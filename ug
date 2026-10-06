@@ -10,6 +10,8 @@
   ug pace mode M         delay (slow each call) or hold (wait until back on pace)
   ug pace margin W PCT   how far ahead of the pace line window 5h or 7d may run
   ug pace set KEY VALUE  pace_min_used_pct, pace_seconds_per_pct, pace_max_delay_seconds
+  ug codex install       add the guard's hooks to Codex (~/.codex/hooks.json) and trust them
+  ug codex trusted       exit 0 when Codex has the hooks and trusts them, 1 otherwise
   ug release             release an in-progress hold right now
   ug config              print effective settings as JSON
 """
@@ -149,6 +151,23 @@ def cmd_pace(args):
     return fail("usage: ug pace [on|off|mode M|margin W PCT|set KEY VALUE]")
 
 
+def cmd_codex(args):
+    here = Path(__file__).resolve().parent
+    if args == ["install"]:
+        result = g.codex_install(here)
+        print(f"hooks      {result['hooks']} guard hooks in {result['hooks_path']}")
+        if result["trusted_now"]:
+            print(f"trusted    {len(result['trusted_now'])} hook(s) recorded in {result['config_path']}")
+        else:
+            print("trusted    already recorded")
+        return 0
+    if args == ["trusted"]:
+        ok = g.codex_trusted(here)
+        print("codex hooks " + (paint("installed and trusted", "32") if ok else paint("missing or untrusted", "33")))
+        return 0 if ok else 1
+    return fail("usage: ug codex <install|trusted>")
+
+
 def cmd_brief():
     line = g.report(g.load_config())["brief"]
     print(line or "no usage data yet")
@@ -203,20 +222,23 @@ def cmd_status(args):
     codex = rep["codex"]
     print(paint("codex", "1"))
     if not codex["windows"]:
-        print("usage      no recent Codex session log with rate limits")
+        print("usage      no Codex usage yet (no hook cache, no recent session log)")
     else:
-        print_windows(codex["windows"], cfg, now, False)
-        print(f"data       {g.fmt_duration(codex.get('data_age_seconds', 0))} old (newest session log)")
+        print_windows(codex["windows"], cfg, now, True)
+        where = "live hook cache" if codex.get("source") == "hook" else "newest session log"
+        print(f"data       {g.fmt_duration(codex.get('data_age_seconds', 0))} old ({where})")
 
-    marker = g.read_json(g.blocked_path())
-    if isinstance(marker, dict):
+    for vendor in g.VENDORS:
+        marker = g.read_json(g.blocked_path(vendor))
+        if not isinstance(marker, dict):
+            continue
         try:
             until = float(marker["until"])
         except (KeyError, TypeError, ValueError):
             until = 0
         if until > now:
             clock = time.strftime("%H:%M", time.localtime(until))
-            print(paint(f"HOLD       active on {marker.get('label', '?')} "
+            print(paint(f"HOLD       {vendor}: active on {marker.get('label', '?')} "
                         f"until {clock} (in {g.fmt_duration(until - now)})", "1;31"))
             print("           run `ug release` to let the pending tool call through")
     return 0
@@ -244,6 +266,8 @@ def main(argv):
         return cmd_status(args)
     if command == "pace":
         return cmd_pace(args)
+    if command == "codex":
+        return cmd_codex(args)
     if command == "brief":
         return cmd_brief()
     return fail(f"unknown command {command!r}; try `ug help`")

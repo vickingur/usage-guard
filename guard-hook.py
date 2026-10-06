@@ -7,6 +7,11 @@ loop outright until the window rolls over. The hold re-reads config and cache
 every tick, so `ug off`, `ug release` and a raised threshold all take effect
 within one poll.
 
+Vendors: Claude Code runs this with no arguments and the usage comes from the
+statusline's cache. Codex runs it with `--vendor codex`; the payload names the
+live transcript, whose last token_count event carries the rate limits, so the
+hook refreshes the Codex cache itself before deciding.
+
 Pacing: when usage runs ahead of a window's pace line by more than its margin,
 each tool call is delayed in proportion ("delay" mode) or blocked until usage is
 back on pace ("hold" mode). Either way the call then proceeds, and the hook
@@ -26,8 +31,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import guardlib as g  # noqa: E402
 
 
+VENDOR = "claude"
+
+
 def allow(context=None):
-    """Exit 0 so Claude Code proceeds with its normal permission flow.
+    """Exit 0 so the agent proceeds with its normal permission flow.
 
     With `context`, the model is told where usage stands; without it the hook
     says nothing at all.
@@ -53,14 +61,14 @@ def deny(reason):
 
 def clear_marker():
     try:
-        g.blocked_path().unlink()
+        g.blocked_path(VENDOR).unlink()
     except OSError:
         pass
 
 
 def write_marker(label, until, pct):
     try:
-        g.atomic_write(g.blocked_path(), {
+        g.atomic_write(g.blocked_path(VENDOR), {
             "until": int(until), "label": label, "pct": pct, "since": int(time.time()),
         })
     except OSError:
@@ -78,12 +86,32 @@ def released_since(start):
         return False
 
 
+def refresh_codex_cache(payload, now):
+    """Write the Codex cache from the running session's transcript, if named."""
+    path = payload.get("transcript_path") if isinstance(payload, dict) else None
+    if not path:
+        return
+    entry = g.limits_from_codex_log(Path(path), now)
+    if entry:
+        try:
+            g.atomic_write(g.cache_path("codex"), entry)
+        except OSError:
+            pass
+
+
 def main():
-    # Drain stdin so Claude Code never sees a broken pipe; the payload is unused.
+    global VENDOR
+    if "--vendor" in sys.argv:
+        VENDOR = sys.argv[sys.argv.index("--vendor") + 1]
+    # Drain stdin so the agent never sees a broken pipe. Claude's payload is
+    # unused; Codex's names the transcript the cache is refreshed from.
+    payload = None
     try:
-        sys.stdin.read()
-    except OSError:
+        payload = json.loads(sys.stdin.read() or "null")
+    except (OSError, ValueError):
         pass
+    if VENDOR == "codex":
+        refresh_codex_cache(payload, time.time())
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
@@ -96,7 +124,7 @@ def main():
         allow()
 
     now = time.time()
-    cache = g.read_json(g.cache_path())
+    cache = g.read_json(g.cache_path(VENDOR))
     if g.is_stale(cache, cfg, now):
         allow()  # fail open: no trustworthy data means no hold
 
@@ -118,7 +146,7 @@ def main():
         if not cfg["enabled"] or released_since(start):
             allow()
 
-        cache = g.read_json(g.cache_path())
+        cache = g.read_json(g.cache_path(VENDOR))
         if g.is_stale(cache, cfg, now):
             allow()
 
@@ -134,6 +162,11 @@ def main():
             clock = time.strftime("%Y-%m-%d %H:%M", time.localtime(worst.resets_at))
             deny(
                 f"Usage guard: {labels} (threshold {worst.threshold:.0f}%). "
+                f"Held for {g.fmt_duration(now - start)} and the window does not reset "
+                f"until {clock}, which exceeds the configured stall budget. "
+                f"Stop and wait, or run `ug off` to disable the guard."
+                if VENDOR == "claude" else
+                f"Usage guard: Codex {labels} (threshold {worst.threshold:.0f}%). "
                 f"Held for {g.fmt_duration(now - start)} and the window does not reset "
                 f"until {clock}, which exceeds the configured stall budget. "
                 f"Stop and wait, or run `ug off` to disable the guard."
@@ -188,7 +221,7 @@ def pace(cfg, cache, now):
         cfg = g.load_config()
         if not cfg["enabled"] or not cfg["pace_enabled"] or released_since(start):
             allow()
-        cache = g.read_json(g.cache_path())
+        cache = g.read_json(g.cache_path(VENDOR))
         if g.is_stale(cache, cfg, now):
             allow()
         current = g.paces(cache, cfg, now)

@@ -91,16 +91,20 @@ def config_path() -> Path:
     return base_dir() / "config.json"
 
 
-def cache_path() -> Path:
-    return base_dir() / "usage.json"
+VENDORS = ("claude", "codex")
+
+
+def cache_path(vendor: str = "claude") -> Path:
+    """Live usage cache: written by the statusline (claude) or the Codex hook (codex)."""
+    return base_dir() / ("usage.json" if vendor == "claude" else f"{vendor}-usage.json")
 
 
 def state_path() -> Path:
     return base_dir() / "state.json"
 
 
-def blocked_path() -> Path:
-    return base_dir() / "blocked.json"
+def blocked_path(vendor: str = "claude") -> Path:
+    return base_dir() / ("blocked.json" if vendor == "claude" else f"{vendor}-blocked.json")
 
 
 def codex_sessions_dir() -> Path:
@@ -295,24 +299,12 @@ def _last_rate_limits(path: Path, tail_bytes: int = 512 * 1024) -> Optional[dict
     return None
 
 
-def codex_limits(now: float, max_age_seconds: float) -> Optional[dict]:
-    """Codex usage in the cache's own shape: {"ts", "five_hour"?, "seven_day"?}.
-
-    None when there is no recent enough Codex session log or it carries no limits.
-    """
-    path = _newest_codex_log(codex_sessions_dir())
-    if path is None:
-        return None
-    try:
-        mtime = path.stat().st_mtime
-    except OSError:
-        return None
-    if now - mtime > max_age_seconds:
-        return None
+def limits_from_codex_log(path: Path, now: float) -> Optional[dict]:
+    """Codex usage read from one session log, in the cache's own shape."""
     limits = _last_rate_limits(path)
     if not limits:
         return None
-    entry = {"ts": mtime}
+    entry = {"ts": now}
     for slot in ("primary", "secondary"):
         window = limits.get(slot)
         if not isinstance(window, dict):
@@ -324,6 +316,37 @@ def codex_limits(now: float, max_age_seconds: float) -> Optional[dict]:
             continue  # that window has rolled over since the log was written
         entry[key] = {"used_percentage": window.get("used_percent"), "resets_at": window.get("resets_at")}
     return entry if len(entry) > 1 else None
+
+
+def codex_limits(now: float, max_age_seconds: float) -> Optional[dict]:
+    """Codex usage: the hook's live cache when fresh, else the newest session log.
+
+    The Codex hooks write `codex-usage.json` from the running session's own
+    transcript on every prompt and tool call; that is authoritative while Codex
+    is active. Without it (hooks not installed, or no session for a while) the
+    newest log under ~/.codex/sessions stands in. None when neither says anything.
+    """
+    cached = read_json(cache_path("codex"))
+    if isinstance(cached, dict) and now - _num(cached.get("ts"), 0) <= max_age_seconds:
+        live = {k: v for k, v in cached.items()
+                if k == "ts" or (isinstance(v, dict) and _num(v.get("resets_at"), 0) > now)}
+        if len(live) > 1:
+            live["source"] = "hook"
+            return live
+    path = _newest_codex_log(codex_sessions_dir())
+    if path is None:
+        return None
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    if now - mtime > max_age_seconds:
+        return None
+    entry = limits_from_codex_log(path, now)
+    if entry:
+        entry["ts"] = mtime
+        entry["source"] = "log"
+    return entry
 
 
 # --- reporting -------------------------------------------------------------
@@ -348,17 +371,23 @@ def report(cfg, now: Optional[float] = None) -> dict:
     marker = read_json(blocked_path())
     if isinstance(marker, dict) and _num(marker.get("until"), 0) > now:
         claude["hold"] = {"window": marker.get("label"), "until": int(_num(marker["until"], 0))}
-    codex = {"windows": []}
+    codex = {"windows": [], "hold": None}
     codex_cache = codex_limits(now, _num(cfg.get("codex_log_max_age_seconds"), DEFAULTS["codex_log_max_age_seconds"]))
     if codex_cache:
         codex["data_age_seconds"] = max(0, int(now - codex_cache["ts"]))
+        codex["source"] = codex_cache.get("source", "log")
         for p in paces(codex_cache, cfg, now):
             codex["windows"].append({
-                "window": p.label, "used_pct": round(p.pct, 1),
+                "window": p.label, "used_pct": round(p.pct, 1), "threshold_pct": p.threshold,
                 "resets_at": p.resets_at, "resets_in_seconds": max(0, p.resets_at - int(now)),
                 "pace_line_pct": round(p.line, 1), "ahead_pct": round(p.ahead, 1),
-                "margin_pct": p.margin, "ahead_of_pace": p.ahead > p.margin,
+                "margin_pct": p.margin, "pacing": p.active,
+                "delay_seconds": round(p.delay_seconds, 1),
+                "catchup_in_seconds": max(0, p.catchup_at - int(now)) if p.active else 0,
             })
+    marker = read_json(blocked_path("codex"))
+    if isinstance(marker, dict) and _num(marker.get("until"), 0) > now:
+        codex["hold"] = {"window": marker.get("label"), "until": int(_num(marker["until"], 0))}
     return {
         "guard": {"enabled": bool(cfg["enabled"]), "pace_enabled": bool(cfg["pace_enabled"]),
                   "pace_mode": cfg["pace_mode"]},
@@ -368,15 +397,13 @@ def report(cfg, now: Optional[float] = None) -> dict:
     }
 
 
-def _window_phrase(w: dict, for_claude: bool) -> str:
+def _window_phrase(w: dict) -> str:
     text = f"{w['window']} {w['used_pct']:.0f}%"
     ahead = w["ahead_pct"]
     if ahead >= 0.5:
         text += f" (+{ahead:.0f} over pace line)"
-    if for_claude and w.get("pacing"):
+    if w.get("pacing"):
         text += f" PACING {w['delay_seconds']:.0f}s/call"
-    elif not for_claude and w.get("ahead_of_pace"):
-        text += " AHEAD OF PACE"
     return text
 
 
@@ -384,14 +411,15 @@ def brief_line(claude: dict, codex: dict, cfg) -> str:
     """One line telling an agent where both vendors stand."""
     parts = []
     if claude["windows"] and not claude["stale"]:
-        parts.append("claude " + ", ".join(_window_phrase(w, True) for w in claude["windows"]))
+        parts.append("claude " + ", ".join(_window_phrase(w) for w in claude["windows"]))
     elif claude["windows"]:
         parts.append("claude: usage data stale")
-    if claude.get("hold"):
-        clock = time.strftime("%H:%M", time.localtime(claude["hold"]["until"]))
-        parts.append(f"HOLD on {claude['hold']['window']} until {clock}")
     if codex["windows"]:
-        parts.append("codex " + ", ".join(_window_phrase(w, False) for w in codex["windows"]))
+        parts.append("codex " + ", ".join(_window_phrase(w) for w in codex["windows"]))
+    for vendor in (claude, codex):
+        if vendor.get("hold"):
+            clock = time.strftime("%H:%M", time.localtime(vendor["hold"]["until"]))
+            parts.append(f"HOLD on {vendor['hold']['window']} until {clock}")
     if not parts:
         return ""
     line = "[usage] " + " · ".join(parts)
@@ -399,6 +427,173 @@ def brief_line(claude: dict, codex: dict, cfg) -> str:
         line += " · guard off"
     elif not cfg["pace_enabled"]:
         line += " · pacing off"
-    if any(w.get("pacing") for w in claude["windows"]) or any(w.get("ahead_of_pace") for w in codex["windows"]):
+    if any(w.get("pacing") for w in claude["windows"] + codex["windows"]):
         line += ". Spend is running ahead of the window: prefer fewer, larger steps; batch reads; avoid fan-outs and long loops until back on pace."
     return line
+
+
+# --- Codex hooks: install and trust ------------------------------------------
+#
+# Codex runs hooks.json hooks only after the user has reviewed them in its TUI,
+# which records a trust hash in config.toml. The hash is a SHA-256 over the
+# normalized hook definition (event, matcher, command, timeout, async,
+# statusMessage), so it can be computed here and written alongside the hooks:
+# an explicit install step that stands in for the review.
+
+CODEX_EVENT_LABEL = {
+    "PreToolUse": "pre_tool_use", "PermissionRequest": "permission_request",
+    "PostToolUse": "post_tool_use", "PreCompact": "pre_compact", "PostCompact": "post_compact",
+    "SessionStart": "session_start", "SessionEnd": "session_end",
+    "UserPromptSubmit": "user_prompt_submit", "SubagentStart": "subagent_start",
+    "SubagentStop": "subagent_stop", "Stop": "stop", "Interrupt": "interrupt",
+}
+CODEX_DEFAULT_TIMEOUT = 600
+
+
+def codex_home() -> Path:
+    env = os.environ.get("UG_CODEX_HOME") or os.environ.get("CODEX_HOME")
+    return Path(env) if env else Path.home() / ".codex"
+
+
+def codex_hooks_path() -> Path:
+    return codex_home() / "hooks.json"
+
+
+def codex_config_path() -> Path:
+    return codex_home() / "config.toml"
+
+
+def codex_hook_hash(event: str, matcher, handler: dict) -> str:
+    """Codex's trust hash for one command hook (see codex-rs hooks/engine/discovery.rs)."""
+    import hashlib
+    timeout = handler.get("timeout")
+    if event in ("SessionEnd", "Interrupt"):
+        timeout = min(max(int(timeout or 1), 1), 3)
+    else:
+        timeout = max(int(timeout or CODEX_DEFAULT_TIMEOUT), 1)
+    config = {"type": "command", "command": handler["command"], "timeout": timeout,
+              "async": bool(handler.get("async", False))}
+    if handler.get("statusMessage"):
+        config["statusMessage"] = handler["statusMessage"]
+    identity = {"event_name": CODEX_EVENT_LABEL[event], "hooks": [config]}
+    if matcher is not None:
+        identity["matcher"] = matcher
+    blob = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    return "sha256:" + hashlib.sha256(blob).hexdigest()
+
+
+def codex_guard_hooks(script_dir: Path) -> dict:
+    """The hooks.json entries the guard needs under Codex."""
+    base = str(script_dir).replace(str(Path.home()), "~", 1)
+    return {
+        "UserPromptSubmit": [{"hooks": [{"type": "command",
+            "command": f"python3 {base}/brief-hook.py --vendor codex", "timeout": 10}]}],
+        "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command",
+            "command": f"python3 {base}/guard-hook.py --vendor codex", "timeout": 21700,
+            "statusMessage": "usage guard"}]}],
+    }
+
+
+def _is_guard_hook(handler: dict) -> bool:
+    return "usage-guard/" in handler.get("command", "") and "--vendor codex" in handler.get("command", "")
+
+
+def codex_trust_entries(doc: dict, hooks_path: Path) -> dict:
+    """{state key: trust hash} for every command hook in a hooks.json document."""
+    out = {}
+    for event, groups in (doc.get("hooks") or {}).items():
+        if event not in CODEX_EVENT_LABEL:
+            continue
+        for gi, group in enumerate(groups or []):
+            for hi, handler in enumerate(group.get("hooks") or []):
+                if handler.get("type", "command") != "command":
+                    continue
+                key = f"{hooks_path}:{CODEX_EVENT_LABEL[event]}:{gi}:{hi}"
+                out[key] = codex_hook_hash(event, group.get("matcher"), handler)
+    return out
+
+
+def codex_trust_state(config_text: str) -> dict:
+    """{state key: trust hash} already recorded in a config.toml text."""
+    import re
+    found = {}
+    for m in re.finditer(r'^\[hooks\.state\."((?:[^"\\]|\\.)*)"\]\s*\n((?:(?!^\[).*\n?)*)', config_text, re.M):
+        key = m.group(1).replace('\\"', '"').replace("\\\\", "\\")
+        h = re.search(r'^trusted_hash\s*=\s*"([^"]+)"', m.group(2), re.M)
+        if h:
+            found[key] = h.group(1)
+    return found
+
+
+def codex_install(script_dir: Path) -> dict:
+    """Add the guard's hooks to Codex's hooks.json and trust them in config.toml.
+
+    Idempotent: existing guard entries are replaced, other hooks and trust
+    entries are left alone. Returns what changed.
+    """
+    hooks_path = codex_hooks_path()
+    doc = read_json(hooks_path, {})
+    if not isinstance(doc, dict):
+        doc = {}
+    hooks = doc.setdefault("hooks", {})
+    wanted = codex_guard_hooks(script_dir)
+    for event, groups in wanted.items():
+        kept = [grp for grp in (hooks.get(event) or [])
+                if not any(_is_guard_hook(h) for h in grp.get("hooks") or [])]
+        hooks[event] = kept + groups
+    atomic_write(hooks_path, doc)
+
+    needed = codex_trust_entries(doc, hooks_path)
+    cfg_path = codex_config_path()
+    try:
+        text = cfg_path.read_text()
+    except OSError:
+        text = ""
+    have = codex_trust_state(text)
+    missing = {k: v for k, v in needed.items() if have.get(k) != v}
+    if missing:
+        import re
+        for key in missing:
+            # drop a stale block for the same key before appending the fresh one
+            text = re.sub(r'^\[hooks\.state\."' + re.escape(key) + r'"\]\s*\n(?:(?!^\[).*\n?)*', "", text, flags=re.M)
+        if text and not text.endswith("\n"):
+            text += "\n"
+        for key, h in missing.items():
+            text += f'\n[hooks.state."{key}"]\ntrusted_hash = "{h}"\n'
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cfg_path.with_suffix(".toml.ug-tmp")
+        tmp.write_text(text)
+        os.replace(tmp, cfg_path)
+    return {"hooks_path": str(hooks_path), "config_path": str(cfg_path),
+            "hooks": sum(len(v) for v in wanted.values()), "trusted_now": sorted(missing)}
+
+
+def codex_trusted(script_dir: Path) -> bool:
+    """True when hooks.json carries the guard's hooks and config.toml trusts them."""
+    hooks_path = codex_hooks_path()
+    doc = read_json(hooks_path)
+    if not isinstance(doc, dict):
+        return False
+    present = {h.get("command") for groups in (doc.get("hooks") or {}).values()
+               for grp in groups or [] for h in grp.get("hooks") or []}
+    wanted = {h["command"] for groups in codex_guard_hooks(script_dir).values()
+              for grp in groups for h in grp["hooks"]}
+    if not wanted <= present:
+        return False
+    try:
+        have = codex_trust_state(codex_config_path().read_text())
+    except OSError:
+        return False
+    needed = codex_trust_entries(doc, hooks_path)
+    guard_keys = {key for key, _ in _guard_entries(doc, hooks_path)}
+    return all(have.get(key) == needed[key] for key in guard_keys)
+
+
+def _guard_entries(doc: dict, hooks_path: Path):
+    for event, groups in (doc.get("hooks") or {}).items():
+        if event not in CODEX_EVENT_LABEL:
+            continue
+        for gi, grp in enumerate(groups or []):
+            for hi, h in enumerate(grp.get("hooks") or []):
+                if _is_guard_hook(h):
+                    yield f"{hooks_path}:{CODEX_EVENT_LABEL[event]}:{gi}:{hi}", h

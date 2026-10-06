@@ -1,5 +1,7 @@
 __pycache__/
 config.json
 usage.json
+codex-usage.json
 state.json
 blocked.json
+codex-blocked.json
