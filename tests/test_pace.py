@@ -45,13 +45,13 @@ class PaceMathTest(unittest.TestCase):
         self.assertEqual(p.delay_seconds, 0.0)
 
     def test_usage_past_the_margin_engages_pacing_with_a_proportional_delay(self):
-        # 2h into 5h: line 38; 70% used is 32 ahead, 12 over the margin -> 120s capped at 90
+        # 2h into 5h: line 38; 70% used is 32 ahead, 12 over the margin -> 60s capped at 30
         [p] = g.paces(cache(self.now, five=(70, 3 * 3600)), self.cfg, self.now)
         self.assertTrue(p.active)
-        self.assertEqual(p.delay_seconds, 90.0)
+        self.assertEqual(p.delay_seconds, 30.0)
         self.cfg["pace_max_delay_seconds"] = 1000
         [p] = g.paces(cache(self.now, five=(70, 3 * 3600)), self.cfg, self.now)
-        self.assertAlmostEqual(p.delay_seconds, 12 * 10, places=0)
+        self.assertAlmostEqual(p.delay_seconds, 12 * 5, places=0)
 
     def test_catchup_is_when_the_line_reaches_usage_minus_margin(self):
         [p] = g.paces(cache(self.now, five=(70, 3 * 3600)), self.cfg, self.now)
@@ -72,11 +72,11 @@ class PaceMathTest(unittest.TestCase):
         self.assertFalse(p.active)
 
     def test_weekly_window_uses_its_own_margin(self):
-        # 2 days into 7d: line 90 * 2/7 = 25.7; 32% is 6.3 ahead, over the 5 margin
-        [p] = g.paces(cache(self.now, seven=(32, 5 * 86400)), self.cfg, self.now)
+        # 2 days into 7d: line 90 * 2/7 = 25.7; 44% is 18.3 ahead, over the 15 margin
+        [p] = g.paces(cache(self.now, seven=(44, 5 * 86400)), self.cfg, self.now)
         self.assertTrue(p.active)
-        self.cfg["pace_margin_7d"] = 10
-        [p] = g.paces(cache(self.now, seven=(32, 5 * 86400)), self.cfg, self.now)
+        self.cfg["pace_margin_7d"] = 25
+        [p] = g.paces(cache(self.now, seven=(44, 5 * 86400)), self.cfg, self.now)
         self.assertFalse(p.active)
 
     def test_pacing_disabled_in_config_deactivates_every_window(self):

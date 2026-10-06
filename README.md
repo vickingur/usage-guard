@@ -113,12 +113,14 @@ Each window has a **pace line**: the usage you would have right now if spend
 were spread evenly across the window and landed exactly on the threshold at
 reset. Two hours into a 5h window with a 95% threshold the line is 38%. The
 window is **ahead** by `used - line`. When ahead exceeds the window's **margin**
-(default 20 points for 5h, 5 for 7d) and usage is at least `pace_min_used_pct`
+(default 20 points for 5h, 15 for 7d) and usage is at least `pace_min_used_pct`
 (default 30%, so a burst right after a reset is left alone), pacing engages:
 
 - `delay` mode (default): every tool call sleeps `pace_seconds_per_pct` seconds
-  per point over the margin, capped at `pace_max_delay_seconds`. 12 points over
-  at the defaults is 90s per call.
+  per point over the margin, capped at `pace_max_delay_seconds`. 4 points over
+  at the defaults is 20s per call; 6 or more points over hits the 30s cap. The
+  cap is deliberately moderate: pacing is a nudge that roughly halves the burn
+  rate and tells the model why, not a wall.
 - `hold` mode: the call waits until the line has caught up to `used - margin`,
   bounded by `max_stall_seconds`. A pace hold ends in an allow, never a deny.
 
@@ -173,10 +175,10 @@ pace hold within one poll tick.
 | `pace_enabled` | `true` | Pacing on or off |
 | `pace_mode` | `"delay"` | `delay` or `hold` |
 | `pace_margin_5h` | `20.0` | Points ahead of the 5h pace line tolerated before pacing |
-| `pace_margin_7d` | `5.0` | Same for the weekly window |
+| `pace_margin_7d` | `15.0` | Same for the weekly window |
 | `pace_min_used_pct` | `30.0` | Pacing never engages below this usage |
-| `pace_seconds_per_pct` | `10.0` | Delay per point over the margin |
-| `pace_max_delay_seconds` | `90.0` | Cap on the per-call delay |
+| `pace_seconds_per_pct` | `5.0` | Delay per point over the margin |
+| `pace_max_delay_seconds` | `30.0` | Cap on the per-call delay |
 | `codex_log_max_age_seconds` | `604800` | Oldest Codex session log that still counts |
 
 The file only needs the keys you want to override; the rest fall back to

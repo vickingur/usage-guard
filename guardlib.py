@@ -36,10 +36,10 @@ DEFAULTS = {
     "pace_enabled": True,
     "pace_mode": "delay",
     "pace_margin_5h": 20.0,
-    "pace_margin_7d": 5.0,
+    "pace_margin_7d": 15.0,
     "pace_min_used_pct": 30.0,
-    "pace_seconds_per_pct": 10.0,
-    "pace_max_delay_seconds": 90.0,
+    "pace_seconds_per_pct": 5.0,
+    "pace_max_delay_seconds": 30.0,
     # A Codex session log older than this no longer says anything about now;
     # windows that have reset since the log was written are dropped anyway.
     "codex_log_max_age_seconds": 7 * 86400,
