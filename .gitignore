@@ -1,0 +1,5 @@
+__pycache__/
+config.json
+usage.json
+state.json
+blocked.json

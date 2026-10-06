@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""ug — control the Claude Code usage guard.
+
+  ug status [--json]     guard state, live usage for Claude and Codex, pace lines, any hold
+  ug brief               the one-line position agents receive at every prompt
+  ug on | off            enable / disable the guard
+  ug threshold [W PCT]   show, or set, the threshold for window 5h or 7d
+  ug pace                show pacing settings
+  ug pace on | off       enable / disable pacing (the threshold hold stays)
+  ug pace mode M         delay (slow each call) or hold (wait until back on pace)
+  ug pace margin W PCT   how far ahead of the pace line window 5h or 7d may run
+  ug pace set KEY VALUE  pace_min_used_pct, pace_seconds_per_pct, pace_max_delay_seconds
+  ug release             release an in-progress hold right now
+  ug config              print effective settings as JSON
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+sys.dont_write_bytecode = True  # keep the shared layer free of __pycache__
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import guardlib as g  # noqa: E402
+
+WINDOW_ARGS = {"5h": "threshold_5h", "7d": "threshold_7d"}
+MARGIN_ARGS = {"5h": "pace_margin_5h", "7d": "pace_margin_7d"}
+PACE_SET_KEYS = ("pace_min_used_pct", "pace_seconds_per_pct", "pace_max_delay_seconds")
+COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
+
+def paint(text, code):
+    return f"\033[{code}m{text}\033[0m" if COLOR else str(text)
+
+
+def fail(message):
+    print(f"ug: {message}", file=sys.stderr)
+    return 1
+
+
+def cmd_on():
+    g.save_config({"enabled": True})
+    print(f"usage guard {paint('on', '32')}")
+    return 0
+
+
+def cmd_off():
+    g.save_config({"enabled": False})
+    print(f"usage guard {paint('off', '33')}")
+    return 0
+
+
+def cmd_threshold(args):
+    cfg = g.load_config()
+    if not args:
+        for window, key in WINDOW_ARGS.items():
+            print(f"{window}  {cfg[key]:g}%")
+        return 0
+    if len(args) != 2:
+        return fail("usage: ug threshold <5h|7d> <percent>")
+    window, raw = args
+    if window not in WINDOW_ARGS:
+        return fail(f"unknown window {window!r} (expected 5h or 7d)")
+    try:
+        value = float(raw)
+    except ValueError:
+        return fail(f"threshold must be a number, got {raw!r}")
+    if not 0 <= value <= 100:
+        return fail(f"threshold must be between 0 and 100, got {value:g}")
+    g.save_config({WINDOW_ARGS[window]: value})
+    print(f"{window} threshold set to {value:g}%")
+    return 0
+
+
+def cmd_release():
+    now = time.time()
+    state = g.read_json(g.state_path(), {})
+    if not isinstance(state, dict):
+        state = {}
+    state["release_at"] = now
+    g.atomic_write(g.state_path(), state)
+    marker = g.read_json(g.blocked_path())
+    if isinstance(marker, dict):
+        print("released the active hold")
+    else:
+        print("no hold active; the next one will not be released by this")
+    return 0
+
+
+def cmd_config():
+    print(json.dumps(g.load_config(), indent=2))
+    return 0
+
+
+def parse_pct(raw, what):
+    try:
+        value = float(raw)
+    except ValueError:
+        return None, fail(f"{what} must be a number, got {raw!r}")
+    if not 0 <= value <= 100:
+        return None, fail(f"{what} must be between 0 and 100, got {value:g}")
+    return value, 0
+
+
+def cmd_pace(args):
+    cfg = g.load_config()
+    if not args:
+        state = paint("on", "32") if cfg["pace_enabled"] else paint("off", "33")
+        print(f"pacing     {state}  mode {cfg['pace_mode']}")
+        for window, key in MARGIN_ARGS.items():
+            print(f"margin {window:<4}{cfg[key]:g}% ahead of the pace line")
+        for key in PACE_SET_KEYS:
+            print(f"{key:<24}{cfg[key]:g}")
+        return 0
+    verb, rest = args[0], args[1:]
+    if verb in ("on", "off") and not rest:
+        g.save_config({"pace_enabled": verb == "on"})
+        print(f"pacing {paint(verb, '32' if verb == 'on' else '33')}")
+        return 0
+    if verb == "mode":
+        if len(rest) != 1 or rest[0] not in g.PACE_MODES:
+            return fail("usage: ug pace mode <delay|hold>")
+        g.save_config({"pace_mode": rest[0]})
+        print(f"pace mode set to {rest[0]}")
+        return 0
+    if verb == "margin":
+        if len(rest) != 2 or rest[0] not in MARGIN_ARGS:
+            return fail("usage: ug pace margin <5h|7d> <percent>")
+        value, err = parse_pct(rest[1], "margin")
+        if err:
+            return err
+        g.save_config({MARGIN_ARGS[rest[0]]: value})
+        print(f"{rest[0]} pace margin set to {value:g}%")
+        return 0
+    if verb == "set":
+        if len(rest) != 2 or rest[0] not in PACE_SET_KEYS:
+            return fail("usage: ug pace set <" + "|".join(PACE_SET_KEYS) + "> <value>")
+        try:
+            value = float(rest[1])
+        except ValueError:
+            return fail(f"value must be a number, got {rest[1]!r}")
+        if value < 0:
+            return fail("value must not be negative")
+        g.save_config({rest[0]: value})
+        print(f"{rest[0]} set to {value:g}")
+        return 0
+    return fail("usage: ug pace [on|off|mode M|margin W PCT|set KEY VALUE]")
+
+
+def cmd_brief():
+    line = g.report(g.load_config())["brief"]
+    print(line or "no usage data yet")
+    return 0
+
+
+def print_windows(windows, cfg, now, for_claude):
+    for w in windows:
+        pct, line = w["used_pct"], w["pace_line_pct"]
+        threshold = w.get("threshold_pct")
+        if threshold is not None:
+            colour = "1;31" if pct >= threshold else ("33" if pct >= threshold * 0.66 else "32")
+            text = f"{w['window']:<10} {paint(f'{pct:.1f}%', colour)}  of {threshold:g}%"
+        else:
+            text = f"{w['window']:<10} {paint(f'{pct:.1f}%', '32')}"
+        text += f"  pace line {line:.0f}%"
+        ahead = w["ahead_pct"]
+        if ahead > 0:
+            text += paint(f" +{ahead:.0f}", "33")
+        if for_claude and w.get("pacing"):
+            text += paint(f"  PACING {w['delay_seconds']:.0f}s/call, back on pace in "
+                          f"{g.fmt_duration(w['catchup_in_seconds'])}", "1;33")
+        elif not for_claude and w.get("ahead_of_pace"):
+            text += paint("  AHEAD OF PACE", "1;33")
+        if w["resets_in_seconds"] > 0:
+            clock = time.strftime("%H:%M", time.localtime(w["resets_at"]))
+            text += f"  resets {clock} (in {g.fmt_duration(w['resets_in_seconds'])})"
+        print(text)
+
+
+def cmd_status(args):
+    cfg = g.load_config()
+    now = time.time()
+    rep = g.report(cfg, now)
+    if args == ["--json"]:
+        print(json.dumps(rep, indent=2))
+        return 0
+    if args:
+        return fail("usage: ug status [--json]")
+    state = paint("on", "1;32") if cfg["enabled"] else paint("off", "1;33")
+    pacing = paint("on", "32") if cfg["pace_enabled"] else paint("off", "33")
+    print(f"guard      {state}   pacing {pacing} ({cfg['pace_mode']})")
+
+    claude = rep["claude"]
+    print(paint("claude", "1"))
+    if not claude["windows"]:
+        print("usage      no usage data yet (statusline has not seen a limit)")
+    else:
+        print_windows(claude["windows"], cfg, now, True)
+        age = g.fmt_duration(claude.get("data_age_seconds", 0))
+        print(f"data       {age} old" + ("  " + paint("STALE — guard fails open", "33") if claude["stale"] else ""))
+    codex = rep["codex"]
+    print(paint("codex", "1"))
+    if not codex["windows"]:
+        print("usage      no recent Codex session log with rate limits")
+    else:
+        print_windows(codex["windows"], cfg, now, False)
+        print(f"data       {g.fmt_duration(codex.get('data_age_seconds', 0))} old (newest session log)")
+
+    marker = g.read_json(g.blocked_path())
+    if isinstance(marker, dict):
+        try:
+            until = float(marker["until"])
+        except (KeyError, TypeError, ValueError):
+            until = 0
+        if until > now:
+            clock = time.strftime("%H:%M", time.localtime(until))
+            print(paint(f"HOLD       active on {marker.get('label', '?')} "
+                        f"until {clock} (in {g.fmt_duration(until - now)})", "1;31"))
+            print("           run `ug release` to let the pending tool call through")
+    return 0
+
+
+def main(argv):
+    if not argv:
+        print(__doc__.strip())
+        return 0
+    command, args = argv[0], argv[1:]
+    if command in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0
+    if command == "on":
+        return cmd_on()
+    if command == "off":
+        return cmd_off()
+    if command == "threshold":
+        return cmd_threshold(args)
+    if command == "release":
+        return cmd_release()
+    if command == "config":
+        return cmd_config()
+    if command == "status":
+        return cmd_status(args)
+    if command == "pace":
+        return cmd_pace(args)
+    if command == "brief":
+        return cmd_brief()
+    return fail(f"unknown command {command!r}; try `ug help`")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
