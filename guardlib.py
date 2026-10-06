@@ -371,7 +371,7 @@ def report(cfg, now: Optional[float] = None) -> dict:
 def _window_phrase(w: dict, for_claude: bool) -> str:
     text = f"{w['window']} {w['used_pct']:.0f}%"
     ahead = w["ahead_pct"]
-    if ahead > 0:
+    if ahead >= 0.5:
         text += f" (+{ahead:.0f} over pace line)"
     if for_claude and w.get("pacing"):
         text += f" PACING {w['delay_seconds']:.0f}s/call"

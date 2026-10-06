@@ -166,7 +166,7 @@ def print_windows(windows, cfg, now, for_claude):
             text = f"{w['window']:<10} {paint(f'{pct:.1f}%', '32')}"
         text += f"  pace line {line:.0f}%"
         ahead = w["ahead_pct"]
-        if ahead > 0:
+        if ahead >= 0.5:
             text += paint(f" +{ahead:.0f}", "33")
         if for_claude and w.get("pacing"):
             text += paint(f"  PACING {w['delay_seconds']:.0f}s/call, back on pace in "

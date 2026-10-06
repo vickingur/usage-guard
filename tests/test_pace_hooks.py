@@ -244,6 +244,12 @@ class StatuslinePaceTest(PaceFixture):
     def test_flags_an_actively_paced_window(self):
         self.assertIn("5h 70% +32▲", self.render(self.payload(70.0, 3 * 3600)))
 
+    def test_no_mark_when_the_gap_rounds_to_zero(self):
+        # 2h into 5h the line is 38; 38.3% used is 0.3 ahead, which would print as +0
+        out = self.render(self.payload(38.3, 3 * 3600))
+        self.assertIn("5h 38%", out)
+        self.assertNotIn("+0", out)
+
     def test_no_mark_when_behind_the_line(self):
         out = self.render(self.payload(10.0, 3600))
         self.assertIn("5h 10%", out)

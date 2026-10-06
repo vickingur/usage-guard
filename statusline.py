@@ -133,7 +133,7 @@ def cache_rate_limits(data, now):
 
 def pace_mark(p):
     """` +12` after a window: dim when within the margin, bold amber when pacing."""
-    if p is None or p.ahead <= 0:
+    if p is None or p.ahead < 0.5:
         return ""
     text = f"+{round(p.ahead)}"
     if p.active:
@@ -158,7 +158,7 @@ def codex_segment(cfg, now):
         pct = window["used_percentage"]
         chunk = f"{DIM}{label}{RESET} " + paint(f"{round(pct)}%", pct_color(pct, float(cfg[cfg_key])))
         p = pace_by_key.get(key)
-        if p is not None and p.ahead > 0:
+        if p is not None and p.ahead >= 0.5:
             chunk += " " + paint(f"+{round(p.ahead)}" + ("▲" if p.ahead > p.margin else ""),
                                  BOLD + YELLOW if p.ahead > p.margin else DIM)
         chunks.append(chunk)
