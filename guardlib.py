@@ -425,7 +425,7 @@ def brief_line(claude: dict, codex: dict, cfg) -> str:
     elif not cfg["pace_enabled"]:
         line += " · pacing off"
     if any(w.get("pacing") for w in claude["windows"] + codex["windows"]):
-        line += ". Spend is running ahead of the window: prefer fewer, larger steps; batch reads; avoid fan-outs and long loops until back on pace."
+        line += ". Spend is running ahead of the window: the guard hook is pacing each tool call for you, so keep working through the delays. Prefer fewer, larger steps; batch reads; defer fan-outs and long loops until back on pace. Pacing is never a reason to stop, pause or ask the user to continue."
     return line
 
 

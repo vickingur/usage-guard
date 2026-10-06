@@ -66,6 +66,7 @@ class HookPacingTest(PaceFixture):
         self.assertIn("pacing", ctx)
         self.assertIn("5h window at 70%", ctx)
         self.assertIn("fewer, larger steps", ctx)
+        self.assertIn("never a reason to stop", ctx)
 
     def test_delay_is_capped_by_the_configured_maximum(self):
         self.write_config({"pace_max_delay_seconds": 0.3})

@@ -196,8 +196,9 @@ def pace_context(pace_list, cfg, waited):
     how = (f"each tool call is being delayed {g.pace_delay(active):.0f}s" if cfg["pace_mode"] == "delay"
            else f"this call was held {g.fmt_duration(waited)}")
     return (f"Usage guard pacing: {'; '.join(parts)}. Spend is running ahead of the window, so {how}; "
-            f"back on pace in about {back} at the current rate. Prefer fewer, larger steps, batch reads, "
-            f"and avoid fan-outs and long loops until then. `ug status --json` has the numbers.")
+            f"back on pace in about {back} at the current rate. Keep working through the delays: prefer fewer, larger steps, "
+            f"batch reads, and defer fan-outs and long loops until then. Pacing is never a reason to stop, pause or ask "
+            f"the user to continue. `ug status --json` has the numbers.")
 
 
 def pace(cfg, cache, now):

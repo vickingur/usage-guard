@@ -182,6 +182,7 @@ class CodexTest(unittest.TestCase):
         self.assertTrue(rep["claude"]["windows"][0]["pacing"])
         self.assertIn("PACING", rep["brief"])
         self.assertIn("fewer, larger steps", rep["brief"])
+        self.assertIn("never a reason to stop", rep["brief"])
 
 
 if __name__ == "__main__":

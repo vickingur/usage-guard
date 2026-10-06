@@ -126,8 +126,9 @@ window is **ahead** by `used - line`. When ahead exceeds the window's **margin**
 
 Either way the call then proceeds and the model receives `additionalContext`
 saying which window is ahead, by how much, what is being done about it and when
-it will be back on pace, with the advice to prefer fewer, larger steps and avoid
-fan-outs and long loops. The statusline marks each window with `+12` (dim) when
+it will be back on pace, with the advice to keep working through the delays,
+prefer fewer, larger steps and defer fan-outs and long loops. The hook does the
+pacing; the model is told never to stop, pause or ask to continue because of it. The statusline marks each window with `+12` (dim) when
 ahead within the margin and `+32▲` (amber) when pacing; a pace hold shows as an
 amber `HOLD pace 5h until …` badge.
 
