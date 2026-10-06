@@ -133,6 +133,46 @@ class CodexHookTest(CodexFixture):
         self.assertIsNone(g.codex_limits(now, 86400))
 
 
+class FreshSessionTest(CodexFixture):
+    def older_log(self, seven_pct, five_pct=None, age=120):
+        path = self.codex / "sessions" / "2026" / "10" / "06" / "previous.jsonl"
+        transcript(path, seven_pct=seven_pct, five_pct=five_pct)
+        os.utime(path, (time.time() - age, time.time() - age))
+        return path
+
+    def fresh_transcript(self):
+        self.transcript.parent.mkdir(parents=True, exist_ok=True)
+        self.transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": "fresh"}}) + "\n")
+
+    def test_report_walks_back_to_a_log_that_carries_limits(self):
+        self.older_log(seven_pct=33.0)
+        self.fresh_transcript()  # newest, but no token_count yet
+        got = g.codex_limits(time.time(), 86400)
+        self.assertEqual(got["seven_day"]["used_percentage"], 33.0)
+        self.assertEqual(got["source"], "log")
+
+    def test_brief_on_the_first_prompt_still_shows_codex_from_the_previous_session(self):
+        self.older_log(seven_pct=33.0)
+        self.fresh_transcript()
+        proc, _ = self.invoke(BRIEF, self.payload("UserPromptSubmit", prompt="hi"), "--vendor", "codex")
+        self.assertIn("codex 7d 33%", self.context(proc))
+
+    def test_guard_paces_a_fresh_session_from_the_previous_sessions_numbers(self):
+        self.older_log(seven_pct=12.0, five_pct=70.0, age=30)
+        self.fresh_transcript()
+        proc, took = self.invoke(HOOK, self.payload("PreToolUse", tool_name="Bash", tool_input={}), "--vendor", "codex")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertGreaterEqual(took, 1.1)
+        self.assertIn("5h window at 70%", self.context(proc))
+
+    def test_guard_fails_open_when_the_only_numbers_are_stale(self):
+        self.older_log(seven_pct=99.0, age=3600)  # older than stale_after_seconds (600)
+        self.fresh_transcript()
+        proc, took = self.invoke(HOOK, self.payload("PreToolUse", tool_name="Bash", tool_input={}), "--vendor", "codex")
+        self.assertEqual(proc.stdout, "")
+        self.assertLess(took, 1.0)
+
+
 class CodexTrustTest(CodexFixture):
     def test_hash_matches_what_codex_computed_for_a_real_hook(self):
         # Golden values observed from codex-cli 0.159.0 after trusting these exact hooks.

@@ -86,6 +86,14 @@ def released_since(start):
         return False
 
 
+def read_cache(cfg, now):
+    """This vendor's usage: Claude's statusline cache, or Codex's hook cache with
+    the recent session logs as fallback for a session that has no usage yet."""
+    if VENDOR == "codex":
+        return g.codex_limits(now, float(cfg["codex_log_max_age_seconds"]))
+    return g.read_json(g.cache_path(VENDOR))
+
+
 def refresh_codex_cache(payload, now):
     """Write the Codex cache from the running session's transcript, if named."""
     path = payload.get("transcript_path") if isinstance(payload, dict) else None
@@ -124,7 +132,7 @@ def main():
         allow()
 
     now = time.time()
-    cache = g.read_json(g.cache_path(VENDOR))
+    cache = read_cache(cfg, now)
     if g.is_stale(cache, cfg, now):
         allow()  # fail open: no trustworthy data means no hold
 
@@ -146,7 +154,7 @@ def main():
         if not cfg["enabled"] or released_since(start):
             allow()
 
-        cache = g.read_json(g.cache_path(VENDOR))
+        cache = read_cache(cfg, now)
         if g.is_stale(cache, cfg, now):
             allow()
 
@@ -221,7 +229,7 @@ def pace(cfg, cache, now):
         cfg = g.load_config()
         if not cfg["enabled"] or not cfg["pace_enabled"] or released_since(start):
             allow()
-        cache = g.read_json(g.cache_path(VENDOR))
+        cache = read_cache(cfg, now)
         if g.is_stale(cache, cfg, now):
             allow()
         current = g.paces(cache, cfg, now)

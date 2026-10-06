@@ -258,8 +258,9 @@ def pace_delay(pace_list) -> float:
 
 # --- Codex -----------------------------------------------------------------
 
-def _newest_codex_log(root: Path) -> Optional[Path]:
-    newest, newest_mtime = None, -1.0
+def _recent_codex_logs(root: Path, limit: int = 8) -> list:
+    """The most recently modified session logs, newest first, as (path, mtime)."""
+    found = []
     try:
         for dirpath, _dirs, files in os.walk(root):
             for name in files:
@@ -267,14 +268,13 @@ def _newest_codex_log(root: Path) -> Optional[Path]:
                     continue
                 path = Path(dirpath) / name
                 try:
-                    mtime = path.stat().st_mtime
+                    found.append((path, path.stat().st_mtime))
                 except OSError:
                     continue
-                if mtime > newest_mtime:
-                    newest, newest_mtime = path, mtime
     except OSError:
-        return None
-    return newest
+        return []
+    found.sort(key=lambda item: item[1], reverse=True)
+    return found[:limit]
 
 
 def _last_rate_limits(path: Path, tail_bytes: int = 512 * 1024) -> Optional[dict]:
@@ -333,20 +333,17 @@ def codex_limits(now: float, max_age_seconds: float) -> Optional[dict]:
         if len(live) > 1:
             live["source"] = "hook"
             return live
-    path = _newest_codex_log(codex_sessions_dir())
-    if path is None:
-        return None
-    try:
-        mtime = path.stat().st_mtime
-    except OSError:
-        return None
-    if now - mtime > max_age_seconds:
-        return None
-    entry = limits_from_codex_log(path, now)
-    if entry:
-        entry["ts"] = mtime
-        entry["source"] = "log"
-    return entry
+    # A session that just started has no token_count yet, so walk back through
+    # the recent logs until one carries limits.
+    for path, mtime in _recent_codex_logs(codex_sessions_dir()):
+        if now - mtime > max_age_seconds:
+            return None
+        entry = limits_from_codex_log(path, now)
+        if entry:
+            entry["ts"] = mtime
+            entry["source"] = "log"
+            return entry
+    return None
 
 
 # --- reporting -------------------------------------------------------------
