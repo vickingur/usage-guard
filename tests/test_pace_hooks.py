@@ -85,9 +85,11 @@ class HookPacingTest(PaceFixture):
     def test_switching_pacing_off_mid_delay_releases_at_once(self):
         self.write_config({"pace_max_delay_seconds": 20, "pace_seconds_per_pct": 2})
         self.write_cache(pct=70.0)
-        proc = subprocess.Popen([sys.executable, str(HOOK)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        # The hook drains stdin and ignores the payload, so an empty stdin lets
+        # the test interact mid-run without a pipe to close (Python 3.9 rejects
+        # communicate() after a manual close).
+        proc = subprocess.Popen([sys.executable, str(HOOK)], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, env=self.env)
-        proc.stdin.write(TOOL_CALL); proc.stdin.close()
         time.sleep(0.5)
         self.write_config({"pace_enabled": False})
         out, err = proc.communicate(timeout=5)
@@ -97,9 +99,11 @@ class HookPacingTest(PaceFixture):
     def test_hold_mode_releases_when_fresh_usage_is_back_on_pace(self):
         self.write_config({"pace_mode": "hold"})
         self.write_cache(pct=70.0)
-        proc = subprocess.Popen([sys.executable, str(HOOK)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        # The hook drains stdin and ignores the payload, so an empty stdin lets
+        # the test interact mid-run without a pipe to close (Python 3.9 rejects
+        # communicate() after a manual close).
+        proc = subprocess.Popen([sys.executable, str(HOOK)], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, env=self.env)
-        proc.stdin.write(TOOL_CALL); proc.stdin.close()
         time.sleep(0.6)
         self.assertIsNone(proc.poll(), "the hook should still be holding")
         self.write_cache(pct=50.0)  # the statusline saw usage fall back within the margin
@@ -112,9 +116,11 @@ class HookPacingTest(PaceFixture):
     def test_hold_mode_writes_a_pace_marker_while_holding(self):
         self.write_config({"pace_mode": "hold", "max_stall_seconds": 3})
         self.write_cache(pct=70.0)
-        proc = subprocess.Popen([sys.executable, str(HOOK)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        # The hook drains stdin and ignores the payload, so an empty stdin lets
+        # the test interact mid-run without a pipe to close (Python 3.9 rejects
+        # communicate() after a manual close).
+        proc = subprocess.Popen([sys.executable, str(HOOK)], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, env=self.env)
-        proc.stdin.write(TOOL_CALL); proc.stdin.close()
         time.sleep(0.6)
         marker = json.loads((self.dir / "blocked.json").read_text())
         self.assertTrue(marker["label"].startswith("pace"))
