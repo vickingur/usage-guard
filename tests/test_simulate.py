@@ -61,6 +61,18 @@ class SimulatorTest(unittest.TestCase):
         self.assertEqual(rep["timeline"][0]["t_h"], 0.0)
         self.assertTrue(all(0 <= p["seven_day_pct"] <= 100 for p in rep["timeline"]))
 
+    def test_every_session_has_an_hourly_track_that_adds_up(self):
+        rep = run("batch", "priority", days=1)
+        self.assertEqual(len(rep["sessions"]), 4)
+        for s in rep["sessions"]:
+            self.assertIn(s["priority"], g.PRIORITIES)
+            self.assertEqual(len(s["track"]), 24)
+            for row in s["track"]:
+                self.assertEqual(len(row), 6)
+                self.assertTrue(95 <= sum(row[1:]) <= 105, row)
+        low = [s for s in rep["sessions"] if s["priority"] == "low"]
+        self.assertTrue(any(row[3] > 0 for s in low for row in s["track"]))  # a low runner gets paced
+
     def test_render_and_compare_are_compact_text(self):
         reps = [run("mixed", policy, days=0.5) for policy in sim.POLICIES]
         text = sim.render(reps[3])

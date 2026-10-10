@@ -266,14 +266,14 @@ const sessionTerms = async ($: EngineInterface, p: Paths, cfg: Config, now: numb
 
 // --- what the band, the status line and the brief show ---------------------
 
-const windowsView = (list: readonly Pace[], now: number): UsageGuardWindow[] =>
+const windowsView = (list: readonly Pace[], now: number, stale: boolean): UsageGuardWindow[] =>
   list.map(p => ({
     label: p.label,
     pct: p.pct,
     threshold: p.threshold,
     ahead: p.ahead,
-    pacing: p.active,
-    delaySeconds: p.delaySeconds,
+    pacing: p.active && !stale,
+    delaySeconds: stale ? 0 : p.delaySeconds,
     resetsIn: Math.max(0, p.resetsAt - now),
   }))
 
@@ -287,19 +287,22 @@ const publish = async (
 ): Promise<readonly Pace[]> => {
   const s = session()
   const stale = isStale(usage, cfg, now)
-  const list = stale ? [] : paces(usage, cfg, now, t)
+  // Old figures are still the last known ones: shown with their age, never
+  // acted on (the guard fails open on them; see guard()).
+  const list = usage === undefined ? [] : paces(usage, cfg, now, t)
   const codex = await readUsage($, p, 'codexUsage')
   const active = list.filter(one => one.active)
   const worst = active.reduce<Pace | undefined>((a, b) => (a === undefined || b.ahead - b.margin > a.ahead - a.margin ? b : a), undefined)
   const view: UsageGuardView = {
-    windows: windowsView(list, now),
+    windows: windowsView(list, now, stale),
     codex: (codex === undefined || now - codex.ts > cfg.codex_log_max_age_seconds ? [] : codex.windows)
       .filter(r => r.resetsAt > now)
       .map(r => ({ label: WINDOWS.find(w => w.key === r.key)?.label ?? r.key, pct: r.pct })),
     hold: s.hold,
-    pacing: worst === undefined ? null : { delaySeconds: paceDelay(active), backIn: Math.max(0, worst.catchupAt - now) },
+    pacing: worst === undefined || stale ? null : { delaySeconds: paceDelay(active), backIn: Math.max(0, worst.catchupAt - now) },
     lift: s.lift,
     stale,
+    ageSeconds: usage === undefined ? 0 : Math.max(0, Math.floor(now - usage.ts)),
     enabled: cfg.enabled,
     paceEnabled: cfg.pace_enabled,
   }
@@ -344,8 +347,9 @@ const windowPhrase = (w: UsageGuardWindow): string => {
 
 const briefLine = (view: UsageGuardView, priority: Priority): string => {
   const parts: string[] = []
-  if (view.windows.length > 0) parts.push(`claude ${view.windows.map(windowPhrase).join(', ')}`)
-  else if (view.stale) parts.push('claude: usage data stale')
+  if (view.windows.length > 0) {
+    parts.push(`claude ${view.windows.map(windowPhrase).join(', ')}${view.stale ? ` (as of ${fmtDuration(view.ageSeconds)} ago)` : ''}`)
+  }
   if (view.codex.length > 0) parts.push(`codex ${view.codex.map(w => `${w.label} ${Math.round(w.pct)}%`).join(', ')}`)
   if (view.hold !== null) parts.push(`HOLD on ${view.hold.label} until ${fmtClock(view.hold.until)}`)
   if (parts.length === 0) return ''
@@ -545,15 +549,15 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="row" gap={1}>
         {e.props.modes.length > 0 && <Text dimColor>{e.props.modes.join(' & ')}</Text>}
-        {view === null || (view.windows.length === 0 && !view.stale) ? (
+        {view === null || view.windows.length === 0 ? (
           <Text dimColor>○ no data</Text>
-        ) : view.windows.length === 0 ? (
-          <Text color="warning">! stale</Text>
         ) : (
           view.windows.map(w => (
             <Box gap={0}>
               <Text dimColor>{w.label} </Text>
-              <Text color={pctColor(w.pct, w.threshold)}>{Math.round(w.pct)}%</Text>
+              <Text color={view.stale ? undefined : pctColor(w.pct, w.threshold)} dimColor={view.stale}>
+                {Math.round(w.pct)}%
+              </Text>
               {w.ahead >= 0.5 && (
                 <Text color={w.pacing ? 'warning' : undefined} dimColor={!w.pacing} bold={w.pacing}>
                   +{Math.round(w.ahead)}
@@ -563,6 +567,7 @@ export const register: Register = (on, options) => {
             </Box>
           ))
         )}
+        {view !== null && view.stale && view.windows.length > 0 && <Text dimColor>~{fmtDuration(view.ageSeconds)}</Text>}
         {view !== null && view.codex.length > 0 && (
           <Text dimColor>cx {view.codex.map(w => `${Math.round(w.pct)}%`).join('/')}</Text>
         )}

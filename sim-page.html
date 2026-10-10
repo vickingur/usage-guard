@@ -60,6 +60,10 @@ svg { width: 100%; height: auto; display: block; font: 11px var(--mono); }
 .figbody { position: relative; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 12px var(--mono); color: var(--muted); margin-top: 6px; }
 .dim { opacity: .35; }
+.tracks text { fill: var(--muted); font-size: 10px; }
+.tracks rect.cell { shape-rendering: crispEdges; }
+.tracks rect.hit { fill: transparent; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
 .note { color: var(--muted); font-size: 13px; max-width: 65ch; }
 @media (prefers-reduced-motion: no-preference) { .series path { transition: opacity .15s; } }
 </style>
@@ -78,6 +82,10 @@ svg { width: 100%; height: auto; display: block; font: 11px var(--mono); }
   <section>
     <h2 id="prioh">What each priority got</h2>
     <div class="tablewrap"><table id="prio"></table></div>
+  </section>
+  <section>
+    <h2 id="tracksh">Session tracks</h2>
+    <figure><figcaption><span>one row per session, one cell per hour, the state that took most of it</span><span id="tracks-legend" class="legend"></span></figcaption><div class="figbody" id="tracks"></div></figure>
   </section>
   <p class="note">Each session is a Markov chain over think, work and done; calls cost a share of both windows, which reset as Claude's do; at 100% the API refuses and a session waits for the reset whatever the policy. Decisions go through the guard's own math. Dashed grey is the pace line, dotted red the threshold.</p>
 </div>
@@ -165,8 +173,45 @@ svg { width: 100%; height: auto; display: block; font: 11px var(--mono); }
     const hide = () => { tip.style.display = 'none'; cross.style.display = 'none' }
     svg.addEventListener('pointermove', move); svg.addEventListener('pointerleave', hide)
   }
+  const STATE = { work: 'var(--s1)', think: 'var(--grid)', pace: 'var(--warn)', hold: 'var(--crit)', wall: 'var(--fg)' }
+  const STATE_LABEL = { work: 'working', think: 'thinking', pace: '⧖ paced', hold: '⊘ held', wall: 'at the wall' }
+  function renderTracks() {
+    const r = runsOf(scenario).find(x => x.policy === selected)
+    const sessions = [...r.sessions].sort((a, b) => ['high', 'normal', 'low'].indexOf(a.priority) - ['high', 'normal', 'low'].indexOf(b.priority) || a.born_h - b.born_h)
+    $('tracksh').textContent = `Session tracks under “${selected}”: ${sessions.length} sessions`
+    const hours = Math.ceil(r.days * 24), L = 78, R = 10, T = 6, ROW = 11, GAP = 2, W = 640
+    const H = T + sessions.length * (ROW + GAP) + 18, cw = (W - L - R) / hours
+    let g = `<g class="axis">${Array.from({ length: Math.floor(r.days) + 1 }, (_, d) => `<text x="${L + d * 24 * cw}" y="${H - 4}" text-anchor="middle">${d}d</text>`).join('')}</g>`
+    sessions.forEach((s, i) => {
+      const y = T + i * (ROW + GAP)
+      g += `<text x="${L - 6}" y="${y + ROW - 2}" text-anchor="end">${GLYPH[s.priority]} ${s.id}</text>`
+      for (const [b, work, think, pace, hold, wall] of s.track) {
+        const shares = { work, think, pace, hold, wall }
+        const top = Object.keys(shares).reduce((a, k) => shares[k] > shares[a] ? k : a, 'think')
+        const sum = work + think + pace + hold + wall
+        g += `<rect class="cell" x="${(L + b * cw).toFixed(1)}" y="${y}" width="${Math.max(cw - 0.4, 0.6).toFixed(2)}" height="${ROW}" fill="${STATE[top]}" opacity="${(0.35 + 0.65 * Math.min(1, shares[top] / Math.max(1, sum))).toFixed(2)}"/>`
+      }
+      g += `<rect class="hit" data-i="${i}" x="${L}" y="${y}" width="${W - L - R}" height="${ROW}"/>`
+    })
+    const body = $('tracks')
+    body.innerHTML = `<svg class="tracks" viewBox="0 0 ${W} ${H}" role="img" aria-label="session states by hour">${g}</svg><div class="tip" id="tracks-tip"></div>`
+    $('tracks-legend').innerHTML = Object.keys(STATE).map(k => `<span><span class="sw" style="background:${STATE[k]}"></span>${STATE_LABEL[k]}</span>`).join('')
+    const svg = body.querySelector('svg'), tip = $('tracks-tip')
+    svg.addEventListener('pointermove', ev => {
+      const hit = ev.target.closest('rect.hit'); if (!hit) { tip.style.display = 'none'; return }
+      const s = sessions[+hit.dataset.i], rect = svg.getBoundingClientRect(), x = (ev.clientX - rect.left) * W / rect.width
+      const b = Math.floor((x - L) / cw), row = s.track.find(t => t[0] === b)
+      if (!row) { tip.style.display = 'none'; return }
+      const [, work, think, pace, hold, wall] = row
+      tip.innerHTML = `${GLYPH[s.priority]} ${s.id} · ${(b / 24).toFixed(1)}d<br>` + Object.entries({ work, think, pace, hold, wall }).filter(([, v]) => v > 0).map(([k, v]) => `${STATE_LABEL[k].padEnd(12)} ${String(v).padStart(3)}%`).join('<br>')
+      tip.style.display = 'block'
+      const px = ev.clientX - rect.left, py = ev.clientY - rect.top
+      tip.style.left = px > rect.width * 0.6 ? `${px - tip.offsetWidth - 12}px` : `${px + 12}px`; tip.style.top = `${py + 12}px`
+    })
+    svg.addEventListener('pointerleave', () => { tip.style.display = 'none' })
+  }
   function renderAll() {
-    renderRun(); renderTabs(); renderPolicies(); renderPrio()
+    renderRun(); renderTabs(); renderPolicies(); renderPrio(); renderTracks()
     const r = runsOf(scenario)[0]
     chart('chart7', 'seven_day_pct', r.windows.seven_day.threshold_pct, true)
     chart('chart5', 'five_hour_pct', 95, false)
