@@ -9,8 +9,11 @@ import {
   idleAbove,
   mergeUsage,
   nextPriority,
+  lineRateAt,
+  paceLine,
   paces,
   parseConfig,
+  profileOf,
   ramp,
   sessionFromFile,
   terms,
@@ -31,7 +34,7 @@ describe('parity cases (hooks/pace-cases.ts, shared with tests/test_parity.py)',
       expect(round(t.delayFactor)).toBe(c.expect.terms.delayFactor)
       expect(round(t.lift)).toBe(c.expect.terms.lift)
       const usage = { ts: c.now, windows: c.windows.map(w => ({ key: w.key as 'five_hour' | 'seven_day', pct: w.pct, resetsAt: c.now + w.resets_in })) }
-      const got = paces(usage, cfg, c.now, t)
+      const got = paces(usage, cfg, c.now, t, profileOf(cfg, 0))
       expect(got.length).toBe(c.expect.paces.length)
       got.forEach((p, i) => {
         const want = c.expect.paces[i]
@@ -46,6 +49,50 @@ describe('parity cases (hooks/pace-cases.ts, shared with tests/test_parity.py)',
       })
     })
   }
+})
+
+describe('weekly profile', () => {
+  const work = parseConfig({ pace_profile_days: [1, 1, 1, 1, 1, 0.3, 0.3], pace_profile_hours: [...Array(8).fill(0.1), ...Array(15).fill(1), 0.1] })
+  const MONDAY = 950400 // 1970-01-12 00:00 UTC
+  const WEEK = 7 * 86400
+
+  test('a uniform profile is the even-spend line', () => {
+    const cfg = parseConfig({})
+    expect(paceLine(95, MONDAY + WEEK, WEEK, MONDAY + WEEK / 2, profileOf(cfg, 0))).toBe(47.5)
+    expect(paceLine(95, MONDAY + WEEK, WEEK, MONDAY + WEEK / 2, profileOf(cfg, 120))).toBe(47.5)
+  })
+
+  test('the line stands still at night and climbs through the working day', () => {
+    const p = profileOf(work, 0)
+    const night = paceLine(90, MONDAY + WEEK, WEEK, MONDAY + 4 * 3600, p)
+    const noon = paceLine(90, MONDAY + WEEK, WEEK, MONDAY + 12 * 3600, p)
+    const evening = paceLine(90, MONDAY + WEEK, WEEK, MONDAY + 20 * 3600, p)
+    expect(night).toBeLessThan(1)
+    expect(noon - night).toBeGreaterThan(3)
+    expect(evening - noon).toBeGreaterThan(7)
+    expect(paceLine(90, MONDAY + WEEK, WEEK, MONDAY + WEEK, p)).toBe(90)
+  })
+
+  test('the local offset moves the profile', () => {
+    // 09:00 UTC is a working hour at UTC+0 and 01:00 at UTC-8: the line climbs there at the night rate
+    const at = MONDAY + 9 * 3600
+    expect(lineRateAt(90, MONDAY + WEEK, WEEK, at, profileOf(work, -480))).toBeLessThan(lineRateAt(90, MONDAY + WEEK, WEEK, at, profileOf(work, 0)) / 5)
+  })
+
+  test('the catch-up time walks the profile', () => {
+    const p = profileOf(work, 0)
+    const usage = { ts: MONDAY + 12 * 3600, windows: [{ key: 'seven_day' as const, pct: 40, resetsAt: MONDAY + WEEK }] }
+    const [pace] = paces(usage, work, MONDAY + 12 * 3600, terms('high', {}, work), p)
+    if (pace === undefined) throw new Error('no pace')
+    expect(pace.active).toBe(true)
+    expect(Math.abs(paceLine(90, MONDAY + WEEK, WEEK, pace.catchupAt, p) - 25)).toBeLessThan(0.3)
+    expect(pace.lineRate).toBeGreaterThan(0)
+  })
+
+  test('a profile of the wrong length is left at the default', () => {
+    expect(parseConfig({ pace_profile_days: [1, 2] }).pace_profile_days.length).toBe(7)
+    expect(parseConfig({ pace_profile_hours: Array(24).fill(-1) }).pace_profile_hours[0]).toBe(1)
+  })
 })
 
 describe('config', () => {

@@ -85,6 +85,7 @@ class Pace:
     active: bool       # pacing is engaged for this window
     delay_seconds: float   # per-tool-call delay in "delay" mode (0 when inactive)
     catchup_at: int    # when the line reaches pct - margin, i.e. when pacing would release
+    line_rate: float = 0.0   # points per second the line climbs right now
 
 
 # --- paths -------------------------------------------------------------------
@@ -162,6 +163,9 @@ def parse_config(stored) -> dict:
 
 
 def _same_type(value, default) -> bool:
+    if isinstance(default, list):
+        return (isinstance(value, list) and len(value) == len(default)
+                and all(isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 for v in value))
     if isinstance(default, bool):
         return isinstance(value, bool)
     if isinstance(default, (int, float)):
@@ -217,10 +221,84 @@ def violations(cache, cfg, now: float) -> list:
     return found
 
 
-def pace_line(threshold: float, resets_at: float, window_seconds: float, now: float) -> float:
-    """Usage the pace line allows at `now`: threshold scaled by the elapsed fraction."""
-    remaining = min(max(resets_at - now, 0.0), window_seconds)
-    return threshold * (1.0 - remaining / window_seconds)
+@dataclass(frozen=True)
+class Profile:
+    """A weekly spending profile: a weight per day of the week (Monday first) and
+    per hour of the day, in local time; `offset_minutes` is the local offset from
+    UTC, east positive. Uniform weights give the even-spend line."""
+
+    days: tuple
+    hours: tuple
+    offset_minutes: int = 0
+
+    def is_uniform(self) -> bool:
+        return len(set(self.days)) == 1 and len(set(self.hours)) == 1
+
+    def weight_at(self, t: float) -> float:
+        local = t + self.offset_minutes * 60
+        day = (int(local // 86400) + 3) % 7   # 1970-01-01 was a Thursday; Monday is 0
+        hour = int((local % 86400) // 3600)
+        return self.days[day] * self.hours[hour]
+
+    def weight_between(self, start: float, end: float) -> float:
+        total, t = 0.0, start
+        while t < end:
+            local = t + self.offset_minutes * 60
+            stop = min(t + (3600 - (local % 3600)), end)
+            total += self.weight_at(t) * (stop - t)
+            t = stop
+        return total
+
+
+UNIFORM = Profile((1.0,) * 7, (1.0,) * 24)
+
+
+def profile_of(cfg, offset_minutes: Optional[int] = None) -> Profile:
+    """The configured weekly profile; the machine's local offset unless given."""
+    if offset_minutes is None:
+        offset_minutes = int(time.localtime().tm_gmtoff // 60)
+    return Profile(tuple(float(v) for v in cfg["pace_profile_days"]), tuple(float(v) for v in cfg["pace_profile_hours"]), offset_minutes)
+
+
+def pace_line(threshold: float, resets_at: float, window_seconds: float, now: float, profile: Profile = UNIFORM) -> float:
+    """Usage the pace line allows at `now`: threshold scaled by the share of the
+    window's spending profile that has elapsed (the elapsed fraction when uniform)."""
+    start = resets_at - window_seconds
+    at = min(max(now, start), resets_at)
+    if profile.is_uniform():
+        return threshold * ((at - start) / window_seconds)
+    whole = profile.weight_between(start, resets_at)
+    if whole <= 0:
+        return threshold * ((at - start) / window_seconds)
+    return threshold * (profile.weight_between(start, at) / whole)
+
+
+def line_rate_at(threshold: float, resets_at: float, window_seconds: float, now: float, profile: Profile = UNIFORM) -> float:
+    """Points per second the line climbs at `now`."""
+    if profile.is_uniform():
+        return threshold / window_seconds
+    whole = profile.weight_between(resets_at - window_seconds, resets_at)
+    return threshold / window_seconds if whole <= 0 else threshold * profile.weight_at(now) / whole
+
+
+def line_reaches(threshold: float, resets_at: float, window_seconds: float, now: float, level: float, profile: Profile = UNIFORM) -> int:
+    """The first time at or after `now` when the line reaches `level`, at most `resets_at`."""
+    if threshold <= 0 or level >= threshold:
+        return int(resets_at)
+    if profile.is_uniform():
+        t = int(resets_at - window_seconds * (1.0 - level / threshold))
+        return max(int(now), min(t, int(resets_at)))
+    t = max(now, resets_at - window_seconds)
+    while t < resets_at:
+        local = t + profile.offset_minutes * 60
+        end = min(t + (3600 - (local % 3600)), resets_at)
+        line_end = pace_line(threshold, resets_at, window_seconds, end, profile)
+        if line_end >= level:
+            line_start = pace_line(threshold, resets_at, window_seconds, t, profile)
+            f = (level - line_start) / (line_end - line_start) if line_end > line_start else 1.0
+            return max(int(now), int(t + f * (end - t)))
+        t = end
+    return int(resets_at)
 
 
 def ramp(idle_seconds: float, after: float, full: float) -> float:
@@ -258,8 +336,9 @@ def terms(priority: str, idle_above: dict, cfg) -> Terms:
     return Terms(margin_factor, delay_factor, lift)
 
 
-def paces(cache, cfg, now: float, t: Terms = ACCOUNT_TERMS) -> list:
-    """One Pace per window present in the cache, whether or not pacing is engaged."""
+def paces(cache, cfg, now: float, t: Terms = ACCOUNT_TERMS, profile: Profile = UNIFORM) -> list:
+    """One Pace per window present in the cache, whether or not pacing is engaged.
+    The weekly window follows `profile`; the 5h window is always even."""
     out = []
     enabled = bool(cfg["pace_enabled"])
     min_used = float(cfg["pace_min_used_pct"])
@@ -272,18 +351,15 @@ def paces(cache, cfg, now: float, t: Terms = ACCOUNT_TERMS) -> list:
         pct, resets_at = reading
         threshold = float(cfg[cfg_key])
         margin = float(cfg[margin_key]) * t.margin_factor
-        line = pace_line(threshold, resets_at, length, now)
+        shape = profile if key == "seven_day" else UNIFORM
+        line = pace_line(threshold, resets_at, length, now, shape)
         ahead = pct - line
         over = ahead - margin
         active = enabled and resets_at > now and pct >= min_used and over > 0
         delay = min(max_delay * t.delay_factor, over * per_pct * t.delay_factor) if active else 0.0
-        # The line reaches (pct - margin) when remaining = W * (1 - (pct - margin) / threshold).
-        if threshold <= 0 or pct - margin >= threshold:
-            catchup = resets_at
-        else:
-            catchup = int(resets_at - length * (1.0 - (pct - margin) / threshold))
-            catchup = max(int(now), min(catchup, resets_at))
-        out.append(Pace(key, label, pct, resets_at, threshold, line, ahead, margin, active, delay, catchup))
+        catchup = line_reaches(threshold, resets_at, length, now, pct - margin, shape)
+        out.append(Pace(key, label, pct, resets_at, threshold, line, ahead, margin, active, delay, catchup,
+                        line_rate_at(threshold, resets_at, length, now, shape)))
     return out
 
 
@@ -453,7 +529,7 @@ def codex_limits(now: float, max_age_seconds: float) -> Optional[dict]:
 
 def _window_rows(cache, cfg, now: float, t: Terms = ACCOUNT_TERMS) -> list:
     rows = []
-    for p in paces(cache, cfg, now, t):
+    for p in paces(cache, cfg, now, t, profile_of(cfg)):
         rows.append({
             "window": p.label, "used_pct": round(p.pct, 1), "threshold_pct": p.threshold,
             "resets_at": p.resets_at, "resets_in_seconds": max(0, p.resets_at - int(now)),
@@ -482,7 +558,7 @@ def report(cfg, now: Optional[float] = None) -> dict:
             "last_call_seconds_ago": max(0, int(now - _num(entry.get("last_call"), now))),
             "lift": round(t.lift, 2), "margin_factor": round(t.margin_factor, 2),
             "delay_factor": round(t.delay_factor, 2), "hold": None,
-            "delay_seconds": round(pace_delay(paces(cache, cfg, now, t)), 1) if isinstance(cache, dict) and not stale else 0,
+            "delay_seconds": round(pace_delay(paces(cache, cfg, now, t, profile_of(cfg))), 1) if isinstance(cache, dict) and not stale else 0,
         }
         hold = entry.get("hold")
         if isinstance(hold, dict) and _num(hold.get("until"), 0) > now:

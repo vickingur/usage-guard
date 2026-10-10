@@ -41,6 +41,7 @@ import {
   mergeUsage,
   paces,
   parseConfig,
+  profileOf,
   sessionFromFile,
   terms,
   usageFromFile,
@@ -51,15 +52,15 @@ import {
 
 const LEGEND = `How to read the footer, left to right:
   ●            the guard: ● fine, ◔ pacing this session, ⊘ holding it, ○ off, ~ figures older than 10 min, · no data
-  ⁵ʰ38%+4      the 5-hour window: 38% of its budget spent, 4 points more than even spending would have reached by now
+  ⁵ʰ38%▴4      the 5-hour window: 38% of its budget spent, 4 points above the pace line (▾4 would be 4 below it)
   ▍36% 3h13m   36% of those 5 hours have passed (the bar), it resets in 3h13m: spent 38% vs elapsed 36% is on pace
-  ⁷ᵈ67%+7 ▋66% 2d8h   the same for the 7-day window
+  ⁷ᵈ67%▴7 ▋66% 2d8h   the same for the 7-day window; its pace line follows the weekly profile (ug pace profile)
   cx 44%       Codex's windows, when known
   ◔⁷ᵈ@67%      this session starts being slowed once the 7-day window reaches 67% (~1h20m after it = at the current rate)
   ⊘@90%        it is stopped once the window reaches 90%; while slowed: ◔20s ↺1h12m = 20s per call, back on pace in 1h12m;
                while stopped: ⊘ 41m →14:00 = resumes in 41m, at 14:00
-  ‹ ▽ low ⇡◇ › priority ▽ low ◇ normal △ high; ⇡◇ = running on normal's terms because normal sessions are idle,
-               ⇡60%△ = 60% of the way to high's; ‹ › step the priority down and up`
+  ‹ ▽ low as ◇ ›  priority ▽ low ◇ normal △ high; "as ◇" = running on normal's terms while normal sessions are idle,
+               "as 60%△" = 60% of the way to high's; ‹ › step the priority down and up`
 
 const priorityAtom = atom({ plugin: 'usage-guard', key: 'priority' } as const, 'normal')
 const viewAtom = atom({ plugin: 'usage-guard', key: 'view' } as const, null)
@@ -259,6 +260,9 @@ const holdReasons = new Map<string, string>()
 
 const seconds = async ($: EngineInterface): Promise<number> => (await $.clock.now()) / 1000
 
+/** Local offset from UTC in minutes, as the profile wants it (east positive). */
+const localOffsetMinutes = (): number => -new Date().getTimezoneOffset()
+
 const session = (): Live => {
   if (live === undefined) throw new Error('usage-guard: session.start has not run')
   return live
@@ -315,7 +319,7 @@ const windowsView = (list: readonly Pace[], cfg: Config, now: number, stale: boo
     // the line climbs threshold/length per second, usage at the burn rate.
     const paceAt = Math.min(p.threshold, Math.max(cfg.pace_min_used_pct, p.line + p.margin))
     const rate = burnRate(p.key)
-    const lineRate = p.threshold / length
+    const lineRate = p.lineRate
     let etaPace: number | undefined
     let etaHold: number | undefined
     if (rate !== undefined) {
@@ -353,7 +357,7 @@ const publish = async (
   const stale = isStale(usage, cfg, now)
   // Old figures are still the last known ones: shown with their age, never
   // acted on (the guard fails open on them; see guard()).
-  const list = usage === undefined ? [] : paces(usage, cfg, now, t)
+  const list = usage === undefined ? [] : paces(usage, cfg, now, t, profileOf(cfg, localOffsetMinutes()))
   const codex = await readUsage($, p, 'codexUsage')
   const active = list.filter(one => one.active)
   const worst = active.reduce<Pace | undefined>((a, b) => (a === undefined || b.ahead - b.margin > a.ahead - a.margin ? b : a), undefined)
@@ -378,12 +382,12 @@ const publish = async (
   return list
 }
 
-// Glyphs for the footer: ▽ ◇ △ are low, normal, high; ⇡ is borrowing (a
-// percentage of the next class, or that class's glyph when whole).
+// Glyphs for the footer: ▽ ◇ △ are low, normal, high; `as ◇` says the session
+// runs on that class's terms (borrowed), `as 60%△` that it is 60% of the way there.
 const GLYPH: Record<Priority, string> = { low: '▽', normal: '◇', high: '△' }
 
 // Always the same width, so the ‹ › buttons beside it never move when it changes.
-const LIFT_WIDTH = '◇ normal ⇡99%△'.length
+const LIFT_WIDTH = '◇ normal as 99%△'.length
 
 const liftGlyph = (priority: Priority, lift: number): string => {
   const own = `${GLYPH[priority]} ${priority}`
@@ -391,8 +395,8 @@ const liftGlyph = (priority: Priority, lift: number): string => {
   const whole = Math.floor(lift + 1e-9)
   const partial = lift - whole
   const target: Priority = whole >= 1 || priority === 'normal' ? 'high' : 'normal'
-  if (lift >= 0.05 && whole >= 1 && partial < 0.05) text = `${own} ⇡${GLYPH[whole === 2 ? 'high' : nextPriority(priority)]}`
-  else if (lift >= 0.05) text = `${own} ⇡${Math.round(partial * 100)}%${GLYPH[target]}`
+  if (lift >= 0.05 && whole >= 1 && partial < 0.05) text = `${own} as ${GLYPH[whole === 2 ? 'high' : nextPriority(priority)]}`
+  else if (lift >= 0.05) text = `${own} as ${Math.round(partial * 100)}%${GLYPH[target]}`
   return text.padEnd(LIFT_WIDTH)
 }
 
@@ -594,7 +598,7 @@ const guard = async ($: EngineInterface, toolUseId: string, signal: AbortSignal)
     if (!cfg.enabled || !cfg.pace_enabled || (await releasedSince($, p, start))) break
     usage = await currentUsage($, p, now, s.lastMeasureAt)
     if (isStale(usage, cfg, now)) break
-    list = paces(usage, cfg, now, t)
+    list = paces(usage, cfg, now, t, profileOf(cfg, localOffsetMinutes()))
   }
   await clearHold()
   await publish($, p, cfg, usage, now, t)
@@ -669,10 +673,10 @@ export const register: Register = (on, options) => {
                 <Text color={view.stale ? undefined : pctColor(w.pct, w.threshold)} dimColor={view.stale}>
                   {Math.round(w.pct)}%
                 </Text>
-                {w.ahead >= 0.5 && (
+                {Math.abs(w.ahead) >= 0.5 && (
                   <Text color={w.pacing ? 'warning' : undefined} dimColor={!w.pacing} bold={w.pacing}>
-                    +{Math.round(w.ahead)}
-                    {w.pacing ? '▲' : ''}
+                    {w.ahead > 0 ? '▴' : '▾'}
+                    {Math.round(Math.abs(w.ahead))}
                   </Text>
                 )}
                 <Text dimColor>

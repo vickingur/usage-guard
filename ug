@@ -13,6 +13,10 @@
   ug pace mode M         delay (slow each call) or hold (wait until back on pace)
   ug pace margin W PCT   how far ahead of the pace line window 5h or 7d may run
   ug pace set KEY VALUE  any numeric pacing or priority setting (see `ug config`)
+  ug pace profile        show the weekly profile the 7d pace line follows
+  ug pace profile uniform | workweek      a preset
+  ug pace profile days 1,1,1,1,1,.3,.3    a weight per day, Monday first
+  ug pace profile hours 8-23[,H-H]        active hours get weight 1, the rest 0.1
   ug sim [...]           simulate sessions against the guard's policy (ug sim --help)
   ug install             install the Claude Code plugin from this checkout and drop the legacy hooks
   ug codex install       add the guard's hook to Codex (~/.codex/hooks.json) and trust it
@@ -143,6 +147,8 @@ def cmd_pace(args):
         g.save_config({MARGIN_ARGS[rest[0]]: value})
         print(f"{rest[0]} pace margin set to {value:g}%")
         return 0
+    if verb == "profile":
+        return cmd_profile(rest)
     if verb == "set":
         if len(rest) != 2 or rest[0] not in PACE_SET_KEYS:
             return fail("usage: ug pace set <" + "|".join(PACE_SET_KEYS) + "> <value>")
@@ -156,6 +162,65 @@ def cmd_pace(args):
         print(f"{rest[0]} set to {value:g}")
         return 0
     return fail("usage: ug pace [on|off|mode M|margin W PCT|set KEY VALUE]")
+
+
+PROFILE_PRESETS = {
+    "uniform": ([1.0] * 7, [1.0] * 24),
+    "workweek": ([1.0] * 5 + [0.3, 0.3], [0.1] * 8 + [1.0] * 15 + [0.1]),
+}
+DAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def parse_hours(spec: str):
+    """`8-23,0-1` -> 24 weights: 1 inside the ranges (end exclusive), 0.1 outside."""
+    weights = [0.1] * 24
+    for part in spec.split(","):
+        a, _, b = part.partition("-")
+        try:
+            start, end = int(a), int(b or a)
+        except ValueError:
+            return None
+        if not (0 <= start < 24 and 0 < end <= 24 and start < end):
+            return None
+        for h in range(start, end):
+            weights[h] = 1.0
+    return weights
+
+
+def cmd_profile(args):
+    cfg = g.load_config()
+    if not args:
+        days, hours = cfg["pace_profile_days"], cfg["pace_profile_hours"]
+        bars = "▁▂▃▄▅▆▇█"
+        top = max(max(days), max(hours), 1e-9)
+        print("days   " + " ".join(f"{DAY_NAMES[i]} {bars[min(7, int(8 * w / top - 1e-9))] if w > 0 else '·'}" for i, w in enumerate(days)))
+        print("hours  " + "".join(bars[min(7, int(8 * w / top - 1e-9))] if w > 0 else "·" for w in hours) + "  (0h to 23h)")
+        preset = next((name for name, (d, h) in PROFILE_PRESETS.items() if list(d) == list(days) and list(h) == list(hours)), None)
+        print(f"preset {preset}" if preset else "custom")
+        return 0
+    if args[0] in PROFILE_PRESETS and len(args) == 1:
+        days, hours = PROFILE_PRESETS[args[0]]
+        g.save_config({"pace_profile_days": days, "pace_profile_hours": hours})
+        print(f"weekly profile set to {args[0]}")
+        return 0
+    if args[0] == "days" and len(args) == 2:
+        try:
+            days = [float(v) for v in args[1].split(",")]
+        except ValueError:
+            days = []
+        if len(days) != 7 or any(v < 0 for v in days):
+            return fail("usage: ug pace profile days <7 weights, Monday first>")
+        g.save_config({"pace_profile_days": days})
+        print("day weights set")
+        return 0
+    if args[0] == "hours" and len(args) == 2:
+        hours = parse_hours(args[1])
+        if hours is None:
+            return fail("usage: ug pace profile hours <H-H[,H-H]> with hours 0 to 24")
+        g.save_config({"pace_profile_hours": hours})
+        print("hour weights set")
+        return 0
+    return fail("usage: ug pace profile [uniform|workweek|days W,W,W,W,W,W,W|hours H-H[,H-H]]")
 
 
 def cmd_codex(args):

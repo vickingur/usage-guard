@@ -48,13 +48,13 @@ Everything sits at the bottom right, where the prompt footer keeps its mode
 labels, on the terminal and in the desktop app:
 
 ```
-● ⁵ʰ31%+2 ▎29% 3h32m ⁷ᵈ67%+8 ▋66% 2d9h cx 44%  ◔⁵ʰ@45%~1h20m ⊘@95%~4h  ‹ ◇ normal ⇡△ ›
+● ⁵ʰ31%▴2 ▎29% 3h32m ⁷ᵈ67%▴8 ▋66% 2d9h cx 44%  ◔⁵ʰ@45%~1h20m ⊘@95%~4h  ‹ ◇ normal as △ ›
 ```
 
 | Mark | Meaning |
 |---|---|
 | `●` `◔` `⊘` `○` `~` `·` | the guard's state: fine, pacing, held, off, figures older than ten minutes, no data yet |
-| `⁵ʰ31%+2` | the 5h window: used, and how far ahead of the pace line; `+8▲` in amber while pacing |
+| `⁵ʰ31%▴2` | the 5h window: used, and how far above (`▴`) or below (`▾`) its pace line; amber while pacing |
 | `▎29% 3h32m` | how much of the window has elapsed, as an eighth-block bar and a figure, and the time until it resets |
 | `cx 3%/44%` | Codex's 5h and 7d windows (one figure when only one is known) |
 | `◔⁵ʰ@45%~1h20m` | pacing would start at 45% on the 5h window, in about 1h20m at the current burn rate |
@@ -63,7 +63,7 @@ labels, on the terminal and in the desktop app:
 | `⊘ 41m →14:00` | while held: how long until the hold lifts, and when |
 | `~22m` | the figures are from 22 minutes ago (the session has been idle) |
 | `▽ low`, `◇ normal`, `△ high` | the session's priority; `›` steps it up and `‹` down, wrapping |
-| `⇡60%△`, `⇡△` | what it borrows: 60% of the way to high's terms, or high's terms whole |
+| `as 60%△`, `as △` | what it borrows: 60% of the way to high's terms, or running on high's terms whole |
 
 The `[usage]` line the model reads says the same in words, with the reset
 times and the block and unblock points. `ug sessions` uses the same marks.
@@ -103,6 +103,25 @@ back to its own within one call when a high session makes one. The footer and
 
 The threshold hold is the account's wall and ignores priority.
 
+### The weekly profile
+
+An even pace line assumes you spend the week evenly. Most people do not: a
+work-week profile tells the guard when spending is expected, and the 7d pace
+line climbs in proportion, fast through working hours, hardly at all at night
+and on weekends. A burst on Tuesday afternoon is then on pace; the same burst
+on Sunday night is not. The 5h window keeps the even line.
+
+```
+ug pace profile                      show it
+ug pace profile workweek             Mon-Fri weight 1, weekends 0.3; 8h-23h weight 1, night 0.1
+ug pace profile days 1,1,1,1,1,0,0   a weight per day, Monday first
+ug pace profile hours 9-18,20-23     active hours get weight 1, the rest 0.1
+ug pace profile uniform              back to the even line
+```
+
+Weights are read in the machine's local time. `ug sim --scenario workweek
+--profile workweek --compare` shows what the profile changes.
+
 ## Simulating the policy
 
 `ug sim` runs sessions against the guard's own math (guardlib, the same
@@ -127,6 +146,10 @@ ug sim --scenario all --html sim.html
 | `mixed` | interactive sessions arriving at 0.4/h, up to 6, 20/60/20 high/normal/low |
 | `batch` | one interactive high session beside three low batch runners that rarely pause |
 | `burst` | six heavy sessions for two days, then quiet |
+| `workweek` | sessions come and go in office hours, Monday to Friday, a little at the weekend; the run starts on a Monday |
+
+`--profile workweek` makes the guard's 7d pace line follow the work-week
+profile instead of the even line, for any scenario.
 
 `--compare` runs `none` (no guard), `threshold`, `pace` (account terms) and
 `priority` (each session's terms with borrowing) on the same seed, and reports
@@ -211,6 +234,8 @@ Inside a session: `/ug`, `/ug priority`, `/ug priority low|normal|high`.
 | `pace_min_used_pct` | `30.0` | Pacing never engages below this usage |
 | `pace_seconds_per_pct` | `5.0` | Delay per point over the margin |
 | `pace_max_delay_seconds` | `30.0` | Cap on the per-call delay at delay factor 1 |
+| `pace_profile_days` | seven `1`s | Weight per day of the week for the 7d pace line, Monday first |
+| `pace_profile_hours` | twenty-four `1`s | Weight per hour of the day, local time |
 | `priority_margin_factor_normal` | `0.5` | A normal session's share of the margin |
 | `priority_margin_factor_low` | `0.0` | A low session's share |
 | `priority_delay_factor_normal` | `2.0` | Stretch on a normal session's delays |
