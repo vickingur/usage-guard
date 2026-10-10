@@ -33,7 +33,7 @@ class ParityTest(unittest.TestCase):
                 cache = {"ts": now}
                 for w in case["windows"]:
                     cache[w["key"]] = {"used_percentage": w["pct"], "resets_at": now + w["resets_in"]}
-                got = g.paces(cache, cfg, now, t)
+                got = g.paces(cache, cfg, now, t, g.profile_of(cfg, 0))
                 self.assertEqual(len(got), len(case["expect"]["paces"]))
                 for p, want in zip(got, case["expect"]["paces"]):
                     self.assertEqual(p.label, want["label"])

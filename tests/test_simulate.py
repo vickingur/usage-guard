@@ -73,6 +73,28 @@ class SimulatorTest(unittest.TestCase):
         low = [s for s in rep["sessions"] if s["priority"] == "low"]
         self.assertTrue(any(row[3] > 0 for s in low for row in s["track"]))  # a low runner gets paced
 
+    def test_a_work_week_profile_keeps_office_hour_sessions_on_the_line(self):
+        even = run("workweek", "priority", days=5)
+        profiled = sim.Simulation(sim.SCENARIOS["workweek"], "priority", 5.0, 10.0, 1,
+                                  g.parse_config({"pace_profile_days": list(sim.WORKWEEK.days), "pace_profile_hours": list(sim.WORKWEEK.hours)})).run()
+        self.assertEqual((even["profile"], profiled["profile"], profiled["activity"]), ("uniform", "workweek", "workweek"))
+        paced = lambda rep: sum(r["paced_h"] for r in rep["priorities"].values())
+        self.assertGreater(paced(even), paced(profiled))
+        self.assertLess(profiled["windows"]["seven_day"]["ahead_of_line_share"], even["windows"]["seven_day"]["ahead_of_line_share"])
+        # nobody works at night in this scenario: the first hours of Monday carry no calls
+        self.assertEqual(sum(s["calls"] for s in [r for r in profiled["priorities"].values()]) > 0, True)
+        self.assertTrue(all(p["seven_day_pct"] == 0 for p in profiled["timeline"][:6]))
+
+    def test_the_profile_flag_and_list_overrides_reach_the_run(self):
+        proc = subprocess.run([sys.executable, str(UG), "sim", "--scenario", "solo", "--days", "0.5", "--dt", "60", "--profile", "workweek", "--json"],
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["profile"], "workweek")
+        proc = subprocess.run([sys.executable, str(UG), "sim", "--scenario", "solo", "--days", "0.5", "--dt", "60",
+                               "--set", "pace_profile_days=1,1,1,1,1,0,0", "--json"], capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["profile"], "custom")
+
     def test_render_and_compare_are_compact_text(self):
         reps = [run("mixed", policy, days=0.5) for policy in sim.POLICIES]
         text = sim.render(reps[3])
@@ -97,6 +119,7 @@ class SimulatorTest(unittest.TestCase):
             self.assertIn("<title>Usage Guard Simulator</title>", page)
             data = json.loads(page.split('<script id="data" type="application/json">', 1)[1].split("</script>", 1)[0])
             self.assertEqual(len(data), len(sim.SCENARIOS) * len(sim.POLICIES))
+            self.assertIn("workweek", {d["scenario"] for d in data})
             self.assertNotIn("__DATA__", page)
             self.assertNotIn("https://", page.split("<script>", 1)[1])  # the page's own script loads nothing
 

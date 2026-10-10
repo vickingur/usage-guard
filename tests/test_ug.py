@@ -155,6 +155,22 @@ class UgTest(unittest.TestCase):
         self.assertEqual(self.config()["borrow_after_seconds"], 60.0)
         self.assertEqual(self.ug("pace", "set", "threshold_5h", "1").returncode, 1)
 
+    # --- weekly profile ---------------------------------------------------------
+
+    def test_profile_presets_days_and_hours(self):
+        self.assertIn("preset uniform", self.ug("pace", "profile").stdout)
+        self.assertEqual(self.ug("pace", "profile", "workweek").returncode, 0)
+        self.assertEqual(self.config()["pace_profile_days"], [1.0] * 5 + [0.3, 0.3])
+        self.assertIn("preset workweek", self.ug("pace", "profile").stdout)
+        self.assertEqual(self.ug("pace", "profile", "hours", "9-18,20-23").returncode, 0)
+        hours = self.config()["pace_profile_hours"]
+        self.assertEqual((hours[8], hours[9], hours[17], hours[18], hours[20], hours[23]), (0.1, 1.0, 1.0, 0.1, 1.0, 0.1))
+        self.assertEqual(self.ug("pace", "profile", "days", "1,1,1,1,1,0,0").returncode, 0)
+        self.assertIn("custom", self.ug("pace", "profile").stdout)
+        self.assertEqual(self.ug("pace", "profile", "days", "1,2").returncode, 1)
+        self.assertEqual(self.ug("pace", "profile", "hours", "25-30").returncode, 1)
+        self.assertEqual(self.ug("pace", "profile", "sideways").returncode, 1)
+
     # --- install ------------------------------------------------------------
 
     def test_install_registers_the_plugin_and_strips_the_legacy_settings(self):

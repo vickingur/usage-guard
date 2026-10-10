@@ -27,6 +27,7 @@ import random
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import guardlib as g  # noqa: E402
@@ -56,6 +57,13 @@ class Scenario:
     profiles: dict            # {priority: Profile}
     cost_5h: float            # % of the 5h window one call costs
     cost_7d: float            # % of the 7d window one call costs
+    activity: Optional[g.Profile] = None   # when set, arrivals and waking follow this weekly profile
+
+
+# The run starts on a Monday at 00:00 in the simulated local time (offset 0),
+# so a weekly profile lines up with its days.
+MONDAY = 345600.0
+WORKWEEK = g.Profile((1.0,) * 5 + (0.3, 0.3), (0.1,) * 8 + (1.0,) * 15 + (0.1,))
 
 
 INTERACTIVE = Profile(calls_per_minute=1.5, work_mean_s=15 * 60, think_mean_s=15 * 60, life_mean_s=6 * H)
@@ -71,6 +79,9 @@ SCENARIOS = {
                       {"high": Profile(1.0, 10 * 60, 20 * 60, math.inf), "normal": INTERACTIVE, "low": BATCH}, 0.1, 0.009),
     "burst": Scenario("burst", ("high", "high", "normal", "normal", "normal", "low"), 0.0, 6, {"normal": 1},
                       {p: HEAVY for p in g.PRIORITIES}, 0.1, 0.009),
+    # A working week: sessions come and go in office hours Monday to Friday, a little at the weekend.
+    "workweek": Scenario("workweek", (), 1.2, 4, {"high": 0.3, "normal": 0.5, "low": 0.2},
+                         {p: INTERACTIVE for p in g.PRIORITIES}, 0.1, 0.009, WORKWEEK),
 }
 
 
@@ -164,6 +175,7 @@ class Simulation:
     def __init__(self, scenario: Scenario, policy: str, days: float, dt: float, seed: int, cfg=None):
         self.sc, self.policy, self.days, self.dt, self.seed = scenario, policy, days, dt, seed
         self.cfg = cfg or g.parse_config({})
+        self.profile = g.profile_of(self.cfg, 0)
         self.rng = random.Random(seed)
         self.windows = Windows(scenario.cost_5h, scenario.cost_7d)
         self.sessions: list = []
@@ -185,9 +197,14 @@ class Simulation:
         cache = self.windows.reading(t)
         if cache is None or self.policy == "none":
             return 0.0, ""
-        vio = g.violations(cache, self.cfg, t)
+        # The guard's math runs on wall-clock seconds so the weekly profile lines
+        # up with its days; the registry and the run keep the simulation's own clock.
+        clock = t + MONDAY
+        cache = {k: ({"used_percentage": v["used_percentage"], "resets_at": v["resets_at"] + MONDAY} if isinstance(v, dict) else v)
+                 for k, v in cache.items()}
+        vio = g.violations(cache, self.cfg, clock)
         if vio:
-            return max(v.resets_at for v in vio) - t, "hold"
+            return max(v.resets_at for v in vio) - clock, "hold"
         if self.policy == "threshold":
             return 0.0, ""
         if self.policy == "pace":
@@ -196,12 +213,12 @@ class Simulation:
             entries = [{"id": o.id, "priority": o.priority, "last_call": o.last_call} for o in self.sessions]
             t_ = g.terms(s.priority, g.idle_above(entries, s.id, t), self.cfg)
             s.lift_sum += t_.lift
-        pace = g.paces(cache, self.cfg, t, t_)
+        pace = g.paces(cache, self.cfg, clock, t_, self.profile)
         if self.cfg["pace_mode"] == "hold":
             active = [x for x in pace if x.active]
             if not active:
                 return 0.0, ""
-            wait = min(max(x.catchup_at for x in active) - t, float(self.cfg["max_stall_seconds"]))
+            wait = min(max(x.catchup_at for x in active) - clock, float(self.cfg["max_stall_seconds"]))
             return wait, "pace"
         delay = g.pace_delay(pace)
         return delay, "pace" if delay > 0 else ""
@@ -249,8 +266,9 @@ class Simulation:
         if p.life_mean_s != math.inf and r.random() < dt / p.life_mean_s:
             s.state = "done"
             return
+        activity = 1.0 if self.sc.activity is None else self.sc.activity.weight_at(MONDAY + t)
         if s.state == "think":
-            if r.random() < dt / p.think_mean_s:
+            if r.random() < activity * dt / p.think_mean_s:
                 s.state = "work"
             return
         if r.random() < dt / p.work_mean_s:
@@ -269,7 +287,8 @@ class Simulation:
             self.spawn(priority, 0.0)
         next_sample = 0.0
         while t < end:
-            for _ in range(poisson(self.rng, self.sc.arrivals_per_hour * dt / H)):
+            activity = 1.0 if self.sc.activity is None else self.sc.activity.weight_at(MONDAY + t)
+            for _ in range(poisson(self.rng, activity * self.sc.arrivals_per_hour * dt / H)):
                 if len(self.sessions) < self.sc.max_concurrent:
                     self.spawn(weighted(self.rng, self.sc.priority_mix), t)
             for s in self.sessions:
@@ -293,7 +312,8 @@ class Simulation:
         w = self.windows
         line = None
         if w.start["seven_day"] is not None:
-            line = g.pace_line(float(self.cfg["threshold_7d"]), w.start["seven_day"] + w.length["seven_day"], w.length["seven_day"], t)
+            line = g.pace_line(float(self.cfg["threshold_7d"]), MONDAY + w.start["seven_day"] + w.length["seven_day"],
+                               w.length["seven_day"], MONDAY + t, self.profile)
         self.samples.append((t, w.used["five_hour"] if w.start["five_hour"] is not None else 0.0,
                              w.used["seven_day"] if w.start["seven_day"] is not None else 0.0, line))
 
@@ -322,7 +342,9 @@ class Simulation:
         ahead = [1 for _, _, used7, line in self.samples if line is not None and used7 > line]
         return {
             "scenario": self.sc.name, "policy": self.policy, "days": self.days, "dt": self.dt, "seed": self.seed,
-            "config": {k: v for k, v in self.cfg.items() if v != g.DEFAULTS[k]},
+            "config": {k: v for k, v in self.cfg.items() if v != g.DEFAULTS[k] and not k.startswith("pace_profile_")},
+            "profile": "uniform" if self.profile.is_uniform() else "workweek" if (list(self.profile.days), list(self.profile.hours)) == (list(WORKWEEK.days), list(WORKWEEK.hours)) else "custom",
+            "activity": "uniform" if self.sc.activity is None else "workweek",
             "windows": {
                 "five_hour": {"peak_pct": round(w.peak["five_hour"], 1), "resets": w.resets["five_hour"]},
                 "seven_day": {"end_pct": round(w.used["seven_day"], 1), "peak_pct": round(w.peak["seven_day"], 1),
@@ -366,7 +388,7 @@ def hours(x: float) -> str:
 
 def render(rep: dict) -> str:
     w = rep["windows"]
-    lines = [f"sim {rep['scenario']} · {rep['days']:g}d · seed {rep['seed']} · policy {rep['policy']}"]
+    lines = [f"sim {rep['scenario']} · {rep['days']:g}d · seed {rep['seed']} · policy {rep['policy']} · line {rep['profile']}"]
     seven = [p["seven_day_pct"] for p in rep["timeline"]]
     five = [p["five_hour_pct"] for p in rep["timeline"]]
     lines.append(f"7d  {strip(seven)}  end {w['seven_day']['end_pct']:.0f}% of {w['seven_day']['threshold_pct']:g}"
@@ -383,7 +405,7 @@ def render(rep: dict) -> str:
 
 def render_compare(reps: list) -> str:
     first = reps[0]
-    lines = [f"sim {first['scenario']} · {first['days']:g}d · seed {first['seed']} · policies compared"]
+    lines = [f"sim {first['scenario']} · {first['days']:g}d · seed {first['seed']} · policies compared · line {first['profile']}"]
     prios = [p for p in g.PRIORITIES if p in first["priorities"]]
     head = f"{'policy':<10}{'7d end':>7}{'5h peak':>8}{'⊘':>6}{'wall':>6}"
     for p in prios:
@@ -410,6 +432,8 @@ def main(argv) -> int:
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                     help="override a guard setting for the run, e.g. pace_max_delay_seconds=120 or pace_mode=hold")
+    ap.add_argument("--profile", choices=("uniform", "workweek", "both"), default="uniform",
+                    help="the weekly profile the guard's 7d pace line follows; `both` runs each (with --html or --json)")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--html", metavar="FILE", help="write a self-contained page of the runs (implies --compare)")
     args = ap.parse_args(argv)
@@ -421,14 +445,22 @@ def main(argv) -> int:
         if key not in g.DEFAULTS or not raw:
             ap.error(f"--set needs KEY=VALUE with a key from `ug config`, got {item!r}")
         default = g.DEFAULTS[key]
-        overrides[key] = raw if isinstance(default, str) else raw.lower() in ("1", "true", "on") if isinstance(default, bool) else float(raw)
-    cfg = g.parse_config(overrides)
+        if isinstance(default, list):
+            overrides[key] = [float(v) for v in raw.split(",")]
+        else:
+            overrides[key] = raw if isinstance(default, str) else raw.lower() in ("1", "true", "on") if isinstance(default, bool) else float(raw)
+    if (args.scenario == "all" or args.profile == "both") and not args.html and not args.json:
+        ap.error("--scenario all and --profile both need --html or --json")
+    cfgs = []
+    for profile in (("uniform", "workweek") if args.profile == "both" else (args.profile,)):
+        shaped = dict(overrides)
+        if profile == "workweek":
+            shaped["pace_profile_days"], shaped["pace_profile_hours"] = list(WORKWEEK.days), list(WORKWEEK.hours)
+        cfgs.append(g.parse_config(shaped))
     policies = POLICIES if args.compare else (args.policy,)
     names = sorted(SCENARIOS) if args.scenario == "all" else [args.scenario]
-    if args.scenario == "all" and not args.html and not args.json:
-        ap.error("--scenario all needs --html or --json")
     reps = [Simulation(SCENARIOS[name], policy, args.days, args.dt, args.seed, cfg).run()
-            for name in names for policy in policies]
+            for cfg in cfgs for name in names for policy in policies]
     if args.html:
         page = (Path(__file__).resolve().parent / "sim-page.html").read_text()
         Path(args.html).write_text(page.replace("__DATA__", json.dumps(reps).replace("</", "<\\/")))

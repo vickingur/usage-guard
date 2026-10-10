@@ -14,6 +14,8 @@ export const DEFAULTS = {
   "pace_min_used_pct": 30.0,
   "pace_seconds_per_pct": 5.0,
   "pace_max_delay_seconds": 30.0,
+  "pace_profile_days": [1, 1, 1, 1, 1, 1, 1],
+  "pace_profile_hours": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
   "priority_margin_factor_normal": 0.5,
   "priority_margin_factor_low": 0.0,
   "priority_delay_factor_normal": 2.0,

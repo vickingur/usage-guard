@@ -342,5 +342,141 @@ export const CASES = [
         }
       ]
     }
+  },
+  {
+    "name": "a work-week profile: Monday 13:46, the line has climbed only the share of the week's weight so far",
+    "config": {
+      "pace_profile_days": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        0.3,
+        0.3
+      ],
+      "pace_profile_hours": [
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0.1
+      ]
+    },
+    "priority": "high",
+    "idle": {},
+    "now": 1000000,
+    "windows": [
+      {
+        "key": "seven_day",
+        "pct": 20.0,
+        "resets_in": 555200
+      }
+    ],
+    "expect": {
+      "terms": {
+        "marginFactor": 1,
+        "delayFactor": 1,
+        "lift": 0
+      },
+      "paces": [
+        {
+          "label": "7d",
+          "line": 6.649,
+          "ahead": 13.351,
+          "margin": 15.0,
+          "active": false,
+          "delaySeconds": 0.0,
+          "catchup_in": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "the same profile on Saturday night: most of the week's weight has elapsed, so 80% used is below the line",
+    "config": {
+      "pace_profile_days": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        0.3,
+        0.3
+      ],
+      "pace_profile_hours": [
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0.1
+      ]
+    },
+    "priority": "high",
+    "idle": {},
+    "now": 1465200,
+    "windows": [
+      {
+        "key": "seven_day",
+        "pct": 80.0,
+        "resets_in": 90000
+      }
+    ],
+    "expect": {
+      "terms": {
+        "marginFactor": 1,
+        "delayFactor": 1,
+        "lift": 0
+      },
+      "paces": [
+        {
+          "label": "7d",
+          "line": 85.148,
+          "ahead": -5.148,
+          "margin": 15.0,
+          "active": false,
+          "delaySeconds": 0.0,
+          "catchup_in": 0
+        }
+      ]
+    }
   }
 ]

@@ -19,6 +19,8 @@ export type Config = {
   pace_min_used_pct: number
   pace_seconds_per_pct: number
   pace_max_delay_seconds: number
+  pace_profile_days: number[]
+  pace_profile_hours: number[]
   priority_margin_factor_normal: number
   priority_margin_factor_low: number
   priority_delay_factor_normal: number
@@ -71,7 +73,11 @@ export function parseConfig(stored: unknown): Config {
   const cfg: Record<string, unknown> = { ...CONFIG_DEFAULTS }
   if (typeof stored === 'object' && stored !== null) {
     for (const [key, value] of Object.entries(stored)) {
-      if (key in cfg && typeof value === typeof cfg[key]) cfg[key] = value
+      if (!(key in cfg)) continue
+      const current = cfg[key]
+      if (Array.isArray(current)) {
+        if (Array.isArray(value) && value.length === current.length && value.every(v => typeof v === 'number' && v >= 0)) cfg[key] = value
+      } else if (typeof value === typeof current) cfg[key] = value
     }
   }
   if (cfg['pace_mode'] !== 'delay' && cfg['pace_mode'] !== 'hold') cfg['pace_mode'] = 'delay'
@@ -81,10 +87,86 @@ export function parseConfig(stored: unknown): Config {
 export const isStale = (usage: Usage | undefined, cfg: Config, now: number): usage is undefined =>
   usage === undefined || now - usage.ts > cfg.stale_after_seconds
 
-/** Usage the pace line allows at `now`: the threshold scaled by the elapsed fraction. */
-export function paceLine(threshold: number, resetsAt: number, windowSeconds: number, now: number): number {
-  const remaining = Math.min(Math.max(resetsAt - now, 0), windowSeconds)
-  return threshold * (1 - remaining / windowSeconds)
+/**
+ * A weekly spending profile: a weight per day of the week (Monday first) and
+ * per hour of the day, in local time; `offsetMinutes` is the local offset from
+ * UTC (what `getTimezoneOffset()` answers, negated). Uniform weights give the
+ * even-spend line; a work-week profile lets the line climb during working
+ * hours and stand still at night and on weekends.
+ */
+export type Profile = { days: readonly number[]; hours: readonly number[]; offsetMinutes: number }
+
+export const UNIFORM: Profile = { days: [1, 1, 1, 1, 1, 1, 1], hours: Array(24).fill(1), offsetMinutes: 0 }
+
+export const profileOf = (cfg: Config, offsetMinutes: number): Profile => ({ days: cfg.pace_profile_days, hours: cfg.pace_profile_hours, offsetMinutes })
+
+export const isUniform = (profile: Profile): boolean =>
+  profile.days.every(w => w === profile.days[0]) && profile.hours.every(w => w === profile.hours[0])
+
+/** The profile's weight at epoch second `t`. */
+export function weightAt(profile: Profile, t: number): number {
+  const local = t + profile.offsetMinutes * 60
+  const dayIndex = (Math.floor(local / 86400) + 3) % 7 // 1970-01-01 was a Thursday; Monday is 0
+  const hour = Math.floor((local % 86400) / 3600)
+  return (profile.days[dayIndex] ?? 1) * (profile.hours[hour] ?? 1)
+}
+
+/** ∫ weight over [from, to], hour by hour. */
+export function weightBetween(profile: Profile, from: number, to: number): number {
+  if (to <= from) return 0
+  let total = 0
+  let t = from
+  while (t < to) {
+    const local = t + profile.offsetMinutes * 60
+    const nextHour = t + (3600 - (local % 3600))
+    const end = Math.min(nextHour, to)
+    total += weightAt(profile, t) * (end - t)
+    t = end
+  }
+  return total
+}
+
+/**
+ * Usage the pace line allows at `now`: the threshold scaled by the share of the
+ * window's spending profile that has elapsed (the elapsed fraction under a
+ * uniform profile).
+ */
+export function paceLine(threshold: number, resetsAt: number, windowSeconds: number, now: number, profile: Profile = UNIFORM): number {
+  const start = resetsAt - windowSeconds
+  const at = Math.min(Math.max(now, start), resetsAt)
+  if (isUniform(profile)) return threshold * ((at - start) / windowSeconds)
+  const whole = weightBetween(profile, start, resetsAt)
+  if (whole <= 0) return threshold * ((at - start) / windowSeconds)
+  return threshold * (weightBetween(profile, start, at) / whole)
+}
+
+/** Points per second the line climbs at `now`. */
+export function lineRateAt(threshold: number, resetsAt: number, windowSeconds: number, now: number, profile: Profile = UNIFORM): number {
+  if (isUniform(profile)) return threshold / windowSeconds
+  const whole = weightBetween(profile, resetsAt - windowSeconds, resetsAt)
+  return whole <= 0 ? threshold / windowSeconds : (threshold * weightAt(profile, now)) / whole
+}
+
+/** The first time at or after `now` when the line reaches `level`, at most `resetsAt`. */
+export function lineReaches(threshold: number, resetsAt: number, windowSeconds: number, now: number, level: number, profile: Profile = UNIFORM): number {
+  if (threshold <= 0 || level >= threshold) return resetsAt
+  if (isUniform(profile)) {
+    const t = Math.floor(resetsAt - windowSeconds * (1 - level / threshold))
+    return Math.max(Math.floor(now), Math.min(t, resetsAt))
+  }
+  let t = Math.max(now, resetsAt - windowSeconds)
+  while (t < resetsAt) {
+    const local = t + profile.offsetMinutes * 60
+    const end = Math.min(t + (3600 - (local % 3600)), resetsAt)
+    const lineEnd = paceLine(threshold, resetsAt, windowSeconds, end, profile)
+    if (lineEnd >= level) {
+      const lineStart = paceLine(threshold, resetsAt, windowSeconds, t, profile)
+      const f = lineEnd > lineStart ? (level - lineStart) / (lineEnd - lineStart) : 1
+      return Math.max(Math.floor(now), Math.floor(t + f * (end - t)))
+    }
+    t = end
+  }
+  return resetsAt
 }
 
 export type Violation = { label: string; pct: number; resetsAt: number; threshold: number }
@@ -165,32 +247,33 @@ export type Pace = {
   active: boolean
   delaySeconds: number
   catchupAt: number
+  lineRate: number   // points per second the line climbs right now
 }
 
 export const ACCOUNT_TERMS: Terms = { marginFactor: 1, delayFactor: 1, lift: 0 }
 
-/** One Pace per window in `usage`, whether or not pacing is engaged. */
-export function paces(usage: Usage, cfg: Config, now: number, t: Terms): Pace[] {
+/**
+ * One Pace per window in `usage`, whether or not pacing is engaged. The weekly
+ * window follows `profile` (the 5h window is always even: it is short).
+ */
+export function paces(usage: Usage, cfg: Config, now: number, t: Terms, profile: Profile = UNIFORM): Pace[] {
   const out: Pace[] = []
   for (const w of WINDOWS) {
     const r = usage.windows.find(one => one.key === w.key)
     if (r === undefined) continue
     const threshold = cfg[w.thresholdKey]
     const margin = cfg[w.marginKey] * t.marginFactor
-    const line = paceLine(threshold, r.resetsAt, w.seconds, now)
+    const shape = w.key === 'seven_day' ? profile : UNIFORM
+    const line = paceLine(threshold, r.resetsAt, w.seconds, now, shape)
     const ahead = r.pct - line
     const over = ahead - margin
     const active = cfg.pace_enabled && r.resetsAt > now && r.pct >= cfg.pace_min_used_pct && over > 0
     const delaySeconds = active
       ? Math.min(cfg.pace_max_delay_seconds * t.delayFactor, over * cfg.pace_seconds_per_pct * t.delayFactor)
       : 0
-    // The line reaches (pct - margin) when remaining = W * (1 - (pct - margin) / threshold).
-    let catchupAt = r.resetsAt
-    if (threshold > 0 && r.pct - margin < threshold) {
-      catchupAt = Math.floor(r.resetsAt - w.seconds * (1 - (r.pct - margin) / threshold))
-      catchupAt = Math.max(Math.floor(now), Math.min(catchupAt, r.resetsAt))
-    }
-    out.push({ key: w.key, label: w.label, pct: r.pct, resetsAt: r.resetsAt, threshold, line, ahead, margin, active, delaySeconds, catchupAt })
+    const catchupAt = lineReaches(threshold, r.resetsAt, w.seconds, now, r.pct - margin, shape)
+    const lineRate = lineRateAt(threshold, r.resetsAt, w.seconds, now, shape)
+    out.push({ key: w.key, label: w.label, pct: r.pct, resetsAt: r.resetsAt, threshold, line, ahead, margin, active, delaySeconds, catchupAt, lineRate })
   }
   return out
 }
