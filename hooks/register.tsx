@@ -49,6 +49,18 @@ import {
   violations,
 } from './pace'
 
+const LEGEND = `How to read the footer, left to right:
+  ●            the guard: ● fine, ◔ pacing this session, ⊘ holding it, ○ off, ~ figures older than 10 min, · no data
+  ⁵ʰ38%+4      the 5-hour window: 38% of its budget spent, 4 points more than even spending would have reached by now
+  ▍36% 3h13m   36% of those 5 hours have passed (the bar), it resets in 3h13m: spent 38% vs elapsed 36% is on pace
+  ⁷ᵈ67%+7 ▋66% 2d8h   the same for the 7-day window
+  cx 44%       Codex's windows, when known
+  ◔⁷ᵈ@67%      this session starts being slowed once the 7-day window reaches 67% (~1h20m after it = at the current rate)
+  ⊘@90%        it is stopped once the window reaches 90%; while slowed: ◔20s ↺1h12m = 20s per call, back on pace in 1h12m;
+               while stopped: ⊘ 41m →14:00 = resumes in 41m, at 14:00
+  ‹ ▽ low ⇡◇ › priority ▽ low ◇ normal △ high; ⇡◇ = running on normal's terms because normal sessions are idle,
+               ⇡60%△ = 60% of the way to high's; ‹ › step the priority down and up`
+
 const priorityAtom = atom({ plugin: 'usage-guard', key: 'priority' } as const, 'normal')
 const viewAtom = atom({ plugin: 'usage-guard', key: 'view' } as const, null)
 
@@ -370,14 +382,18 @@ const publish = async (
 // percentage of the next class, or that class's glyph when whole).
 const GLYPH: Record<Priority, string> = { low: '▽', normal: '◇', high: '△' }
 
+// Always the same width, so the ‹ › buttons beside it never move when it changes.
+const LIFT_WIDTH = '◇ normal ⇡99%△'.length
+
 const liftGlyph = (priority: Priority, lift: number): string => {
   const own = `${GLYPH[priority]} ${priority}`
-  if (lift < 0.05) return own
+  let text = own
   const whole = Math.floor(lift + 1e-9)
   const partial = lift - whole
   const target: Priority = whole >= 1 || priority === 'normal' ? 'high' : 'normal'
-  if (whole >= 1 && partial < 0.05) return `${own} ⇡${GLYPH[whole === 2 ? 'high' : nextPriority(priority)]}`
-  return `${own} ⇡${Math.round(partial * 100)}%${GLYPH[target]}`
+  if (lift >= 0.05 && whole >= 1 && partial < 0.05) text = `${own} ⇡${GLYPH[whole === 2 ? 'high' : nextPriority(priority)]}`
+  else if (lift >= 0.05) text = `${own} ⇡${Math.round(partial * 100)}%${GLYPH[target]}`
+  return text.padEnd(LIFT_WIDTH)
 }
 
 const liftText = (priority: Priority, lift: number): string => {
@@ -694,7 +710,7 @@ export const register: Register = (on, options) => {
         </Box>
         <Box gap={0}>
           <Button key="priority-down" plain label="‹" onPress={() => void stepPriority($, -1)} />
-          <Text> {liftGlyph(priority, view?.lift ?? 0)} </Text>
+          <Text>{liftGlyph(priority, view?.lift ?? 0)}</Text>
           <Button key="priority-up" plain label="›" onPress={() => void stepPriority($, 1)} />
         </Box>
       </Box>
@@ -706,6 +722,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'ug' }, async ($, e) => {
     const words = e.args.trim().split(/\s+/).filter(Boolean)
     const s = session()
+    if (words[0] === 'legend' || words[0] === 'help') return { text: LEGEND }
     if (words[0] === 'priority') {
       const wanted = words[1]
       if (wanted === undefined) {
@@ -778,7 +795,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'ug',
       description: "Usage guard: where the windows stand, or set this session's priority",
-      argumentHint: '[priority [low|normal|high]]',
+      argumentHint: '[legend | priority [low|normal|high]]',
     })
     await pruneSessions($, p, now)
     const t = await sessionTerms($, p, cfg, now)
