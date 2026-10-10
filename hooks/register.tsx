@@ -309,15 +309,27 @@ const publish = async (
 }
 
 const statusText = (view: UsageGuardView): string | undefined => {
-  if (view.hold !== null) {
-    const at = view.hold.until
-    return `usage guard: HOLD ${view.hold.label} until ${fmtClock(at)}`
-  }
+  if (view.hold !== null) return `${view.hold.kind === 'pace' ? '⧖' : '⊘'} ${view.hold.label} →${fmtClock(view.hold.until)}`
   if (view.pacing !== null && view.pacing.delaySeconds > 0) {
-    const ahead = view.windows.filter(w => w.pacing).map(w => `${w.label} +${Math.round(w.ahead)}`).join(', ')
-    return `usage guard: pacing ${Math.round(view.pacing.delaySeconds)}s/call (${ahead} over pace line)`
+    const ahead = view.windows.filter(w => w.pacing).map(w => `${w.label} +${Math.round(w.ahead)}`).join(' ')
+    return `⧖ ${Math.round(view.pacing.delaySeconds)}s/call · ${ahead} · ↺${fmtDuration(view.pacing.backIn)}`
   }
   return undefined
+}
+
+// Glyphs for the band and the pinned line: ▽ ◇ △ are low, normal, high; ⇡ is
+// borrowing (a percentage of the next class, or that class's glyph when whole);
+// ⧖ pacing, ⊘ a hold, ○ off.
+const GLYPH: Record<Priority, string> = { low: '▽', normal: '◇', high: '△' }
+
+const liftGlyph = (priority: Priority, lift: number): string => {
+  const own = `${GLYPH[priority]} ${priority}`
+  if (lift < 0.05) return own
+  const whole = Math.floor(lift + 1e-9)
+  const partial = lift - whole
+  const target: Priority = whole >= 1 || priority === 'normal' ? 'high' : 'normal'
+  if (whole >= 1 && partial < 0.05) return `${own} ⇡${GLYPH[whole === 2 ? 'high' : nextPriority(priority)]}`
+  return `${own} ⇡${Math.round(partial * 100)}%${GLYPH[target]}`
 }
 
 const liftText = (priority: Priority, lift: number): string => {
@@ -505,7 +517,7 @@ const setPriority = async ($: EngineInterface, priority: Priority): Promise<void
 const cyclePriority = async ($: EngineInterface): Promise<Priority> => {
   const priority = nextPriority(session().priority)
   await setPriority($, priority)
-  $.ui.toast(`priority: ${priority}`)
+  $.ui.toast(`${GLYPH[priority]} ${priority}`)
   return priority
 }
 
@@ -539,11 +551,10 @@ export const register: Register = (on, options) => {
     const pacing = view?.pacing ?? null
     return (
       <Box flexDirection="row" gap={1}>
-        <Text dimColor>usage</Text>
         {view === null || (view.windows.length === 0 && !view.stale) ? (
-          <Text dimColor>no data yet</Text>
+          <Text dimColor>○ no data</Text>
         ) : view.windows.length === 0 ? (
-          <Text color="warning">stale</Text>
+          <Text color="warning">! stale</Text>
         ) : (
           view.windows.map(w => (
             <Box gap={0}>
@@ -551,7 +562,7 @@ export const register: Register = (on, options) => {
               <Text color={pctColor(w.pct, w.threshold)}>{Math.round(w.pct)}%</Text>
               {w.ahead >= 0.5 && (
                 <Text color={w.pacing ? 'warning' : undefined} dimColor={!w.pacing} bold={w.pacing}>
-                  {' '}+{Math.round(w.ahead)}
+                  +{Math.round(w.ahead)}
                   {w.pacing ? '▲' : ''}
                 </Text>
               )}
@@ -559,21 +570,21 @@ export const register: Register = (on, options) => {
           ))
         )}
         {view !== null && view.codex.length > 0 && (
-          <Text dimColor>cx {view.codex.map(w => `${w.label} ${Math.round(w.pct)}%`).join(' ')}</Text>
+          <Text dimColor>cx {view.codex.map(w => `${Math.round(w.pct)}%`).join('/')}</Text>
         )}
         {hold !== null && (
-          <Text color={hold.kind === 'pace' ? 'warning' : 'error'} bold inverse>
-            {' '}HOLD {hold.label} until {fmtClock(hold.until)}{' '}
+          <Text color={hold.kind === 'pace' ? 'warning' : 'error'} bold>
+            {hold.kind === 'pace' ? '⧖' : '⊘'} {hold.label} →{fmtClock(hold.until)}
           </Text>
         )}
         {hold === null && pacing !== null && pacing.delaySeconds > 0 && (
           <Text color="warning" bold>
-            pacing {Math.round(pacing.delaySeconds)}s/call, back in {fmtDuration(pacing.backIn)}
+            ⧖ {Math.round(pacing.delaySeconds)}s ↺{fmtDuration(pacing.backIn)}
           </Text>
         )}
-        {view !== null && !view.enabled && <Text color="warning">guard off</Text>}
-        {view !== null && view.enabled && !view.paceEnabled && <Text color="warning">pace off</Text>}
-        <Button key="priority" hotkey="p" label={`priority: ${liftText(priority, view?.lift ?? 0)}`} onPress={() => void cyclePriority($)} />
+        {view !== null && !view.enabled && <Text color="warning">○ off</Text>}
+        {view !== null && view.enabled && !view.paceEnabled && <Text color="warning">⧖ off</Text>}
+        <Button key="priority" hotkey="p" label={liftGlyph(priority, view?.lift ?? 0)} onPress={() => void cyclePriority($)} />
       </Box>
     )
   })

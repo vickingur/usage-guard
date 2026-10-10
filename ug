@@ -13,6 +13,7 @@
   ug pace mode M         delay (slow each call) or hold (wait until back on pace)
   ug pace margin W PCT   how far ahead of the pace line window 5h or 7d may run
   ug pace set KEY VALUE  any numeric pacing or priority setting (see `ug config`)
+  ug sim [...]           simulate sessions against the guard's policy (ug sim --help)
   ug install             install the Claude Code plugin from this checkout and drop the legacy hooks
   ug codex install       add the guard's hook to Codex (~/.codex/hooks.json) and trust it
   ug codex trusted       exit 0 when Codex has the hook and trusts it, 1 otherwise
@@ -242,15 +243,20 @@ def cmd_install():
 
 # --- sessions and priorities ----------------------------------------------------
 
+GLYPH = {"low": "▽", "normal": "◇", "high": "△"}
+
+
 def lift_phrase(row) -> str:
+    """`◇ normal ⇡60%△`: the class, and what it borrows (a share of the next class, or that class whole)."""
     lift, priority = row["lift"], row["priority"]
+    own = f"{GLYPH[priority]} {priority}"
     if lift < 0.05:
-        return ""
+        return own
     above = g.PRIORITIES[min(g.PRIORITIES.index(priority) + 1, 2)]
     whole, partial = int(lift + 1e-9), lift - int(lift + 1e-9)
     if whole >= 1 and partial < 0.05:
-        return f"running as {'high' if whole == 2 else above}"
-    return f"borrowing {partial * 100:.0f}% of {'high' if whole >= 1 else above}"
+        return f"{own} ⇡{GLYPH['high' if whole == 2 else above]}"
+    return f"{own} ⇡{partial * 100:.0f}%{GLYPH['high' if whole >= 1 else above]}"
 
 
 def print_sessions(rows, now):
@@ -259,14 +265,13 @@ def print_sessions(rows, now):
         return
     print(f"sessions   {len(rows)} live")
     for row in rows:
-        text = f"  {str(row['id'])[:8]:<8} {paint(row['priority'], '1'):<{15 if COLOR else 6}} "
-        extra = lift_phrase(row)
-        text += f"{extra:<24} last call {g.fmt_duration(row['last_call_seconds_ago']) if row['last_call_seconds_ago'] >= 60 else str(row['last_call_seconds_ago']) + 's'} ago"
+        ago = row["last_call_seconds_ago"]
+        text = f"  {str(row['id'])[:8]:<8} {lift_phrase(row):<16} {g.fmt_duration(ago) if ago >= 60 else f'{ago}s'} ago"
         if row.get("delay_seconds"):
-            text += paint(f"  {row['delay_seconds']:.0f}s/call", "33")
+            text += paint(f"  ⧖{row['delay_seconds']:.0f}s", "33")
         if row.get("hold"):
             clock = time.strftime("%H:%M", time.localtime(row["hold"]["until"]))
-            text += paint(f"  HOLD {row['hold']['window']} until {clock}", "1;31")
+            text += paint(f"  {'⧖' if row['hold'].get('kind') == 'pace' else '⊘'}{row['hold']['window']}→{clock}", "1;31")
         cwd = row.get("cwd") or ""
         if cwd:
             text += f"  {cwd.replace(str(Path.home()), '~', 1)}"
@@ -372,7 +377,7 @@ COMMANDS = {
     "on": lambda args: cmd_on(), "off": lambda args: cmd_off(), "threshold": cmd_threshold,
     "release": lambda args: cmd_release(), "config": lambda args: cmd_config(), "status": cmd_status,
     "pace": cmd_pace, "codex": cmd_codex, "brief": lambda args: cmd_brief(), "install": lambda args: cmd_install(),
-    "sessions": lambda args: cmd_sessions(), "priority": cmd_priority,
+    "sessions": lambda args: cmd_sessions(), "priority": cmd_priority, "sim": lambda args: __import__("simulate").main(args),
 }
 
 

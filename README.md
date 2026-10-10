@@ -45,16 +45,22 @@ Python 3.9 or later, standard library only. The mod itself needs nothing.
 ## The band
 
 ```
-usage  5h 4%  7d 63% +4  cx 7d 44%  [ priority: normal, borrowing 60% of high ]
+5h 20% +4 · 7d 65% +6▲ · cx 44% · ⧖ 20s ↺1h12m · [◇ normal ⇡60%△]
 ```
 
-- `+4` is how far the window runs ahead of its pace line; dim within the
-  margin, amber with `▲` while pacing.
-- `pacing 20s/call, back in 1h12m` or `HOLD 5h until 14:00` appear while the
-  guard is acting; the same text is pinned under the prompt.
-- The button cycles low, normal, high (hotkey `p` while the band has focus).
-  `/ug priority high` sets it by name, `/ug priority` cycles, `/ug` prints the
-  position.
+| Mark | Meaning |
+|---|---|
+| `+4` | how far the window runs ahead of its pace line; dim within the margin, amber with `▲` while pacing |
+| `cx 3%/44%` | Codex's 5h and 7d windows (one figure when only one is known) |
+| `⧖ 20s ↺1h12m` | pacing: the per-call delay and when the window is back on pace |
+| `⊘ 5h →14:00` | a threshold hold and when it lifts (`⧖ 5h →…` for a pace hold) |
+| `○ off`, `⧖ off`, `○ no data`, `! stale` | the guard, pacing, or its data |
+| `▽ low`, `◇ normal`, `△ high` | the session's priority; the button cycles it (hotkey `p` while the band has focus) |
+| `⇡60%△`, `⇡△` | what it borrows: 60% of the way to high's terms, or high's terms whole |
+
+The same marks pin a one-liner under the prompt while the guard is acting, and
+`ug sessions` uses them. `/ug priority high` sets the priority by name, `/ug
+priority` cycles, `/ug` prints the position in words.
 
 A session starts at the plugin option `priority` (`/config`, default
 `normal`), or at `UG_PRIORITY` from the environment when set:
@@ -88,6 +94,40 @@ back to its own within one call when a high session makes one. The band and
 `ug sessions` say what each session is borrowing.
 
 The threshold hold is the account's wall and ignores priority.
+
+## Simulating the policy
+
+`ug sim` runs sessions against the guard's own math (guardlib, the same
+functions the mod mirrors) so a setting can be judged before it is changed.
+Each session is a Markov chain over `think` (no calls), `work` (tool calls at
+its intensity) and `done`; new sessions arrive as a Poisson process, with a
+priority drawn from the scenario's mix. Every call costs a share of the 5h and
+7d windows, which reset as Claude's do. At 100% the API refuses, so a session
+hits the wall and waits for the reset whatever the policy.
+
+```
+ug sim --scenario burst --compare
+ug sim --scenario batch --policy priority --days 3 --seed 7
+ug sim --scenario mixed --compare --set pace_max_delay_seconds=120
+ug sim --scenario solo --set pace_mode=hold --json
+```
+
+| Scenario | Sessions |
+|---|---|
+| `solo` | one normal session, steady work all week |
+| `mixed` | interactive sessions arriving at 0.4/h, up to 6, 20/60/20 high/normal/low |
+| `batch` | one interactive high session beside three low batch runners that rarely pause |
+| `burst` | six heavy sessions for two days, then quiet |
+
+`--compare` runs `none` (no guard), `threshold`, `pace` (account terms) and
+`priority` (each session's terms with borrowing) on the same seed, and reports
+the week's end, the 5h peak, hours held (`⊘`), hours lost at the wall, and per
+priority the calls per working hour and the p95 wait. A single policy prints
+the hourly strips of both windows and a row per priority: calls, nominal and
+achieved rate, mean and p95 wait, hours paced, held and at the wall, and the
+mean lift borrowed. `--set KEY=VALUE` overrides any key from `ug config` for
+the run. Runs are deterministic per seed; a week at the default 5s step takes
+about a second.
 
 ## Where the numbers come from
 
@@ -133,6 +173,7 @@ registry is re-read at most every five seconds.
     ug pace mode M         delay or hold
     ug pace margin W PCT   how far ahead of the pace line window W may run
     ug pace set KEY VALUE  any numeric pacing, priority or borrow setting
+    ug sim [...]           simulate sessions against the policy (below)
     ug install             install the plugin from this checkout, drop the legacy hooks
     ug codex install       add the guard's hook to Codex and trust it
     ug codex trusted       exit 0 when Codex has the hook and trusts it
@@ -182,6 +223,7 @@ Python side reads it from there.
 | `guardlib.py` | The same math for the CLI and Codex, the Codex reader, the report |
 | `codex-hook.py` | Codex's command hook |
 | `ug` | The CLI |
+| `simulate.py` | `ug sim`: the Markov-chain simulator |
 
 ## Tests
 

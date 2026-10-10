@@ -270,9 +270,9 @@ describe('priority: command and band', () => {
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'usage-guard', surface, component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 5, bodyColumns: 100, scroll: { top: 0, bodyRows: 5 }, view: {} } })
       expect(await ui.find({ type: 'Text', text: /70%/ })).toBeDefined()
-      expect((await ui.find({ key: 'priority' }))?.props['label']).toContain('priority: normal')
+      expect((await ui.find({ key: 'priority' }))?.props['label']).toBe('◇ normal ⇡△')
       await ui.press({ key: 'priority' })
-      expect((await ui.find({ key: 'priority' }))?.props['label']).toBe('priority: high')
+      expect((await ui.find({ key: 'priority' }))?.props['label']).toBe('△ high')
       expect((w.read('sessions/me.json') as { priority: string }).priority).toBe('high')
       await ui.press({ key: 'priority' })
       expect((w.read('sessions/me.json') as { priority: string }).priority).toBe('low')
