@@ -1,7 +1,8 @@
 __pycache__/
+.claude-plugin/types/
 config.json
 usage.json
 codex-usage.json
-state.json
-blocked.json
 codex-blocked.json
+state.json
+sessions/

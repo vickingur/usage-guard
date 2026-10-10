@@ -5,7 +5,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import guardlib as g  # noqa: E402
 
-H5, D7 = g.WINDOW_SECONDS["five_hour"], g.WINDOW_SECONDS["seven_day"]
+H5, D7 = (w[4] for w in g.WINDOWS)
 
 
 def cache(now, five=None, seven=None):
@@ -99,6 +99,52 @@ class PaceMathTest(unittest.TestCase):
         (Path(self.tmp.name) / "config.json").write_text(json.dumps({"pace_mode": "sideways"}))
         self.assertEqual(g.load_config()["pace_mode"], "delay")
 
+    def test_a_value_of_the_wrong_type_is_left_at_the_default(self):
+        (Path(self.tmp.name) / "config.json").write_text(json.dumps({"threshold_5h": "80", "enabled": 0, "poll_seconds": 2}))
+        cfg = g.load_config()
+        self.assertEqual((cfg["threshold_5h"], cfg["enabled"], cfg["poll_seconds"]), (95.0, True, 2))
+
+
+class PriorityTermsTest(unittest.TestCase):
+    def setUp(self):
+        self.cfg = g.parse_config({})
+        self.now = 1_800_000_000.0
+
+    def test_high_runs_on_the_account_terms_whatever_is_around(self):
+        self.assertEqual(g.terms("high", {"high": 0, "normal": 0}, self.cfg), g.ACCOUNT_TERMS)
+
+    def test_normal_beside_a_busy_high_session_keeps_half_the_margin_and_double_the_delay(self):
+        t = g.terms("normal", {"high": 30}, self.cfg)
+        self.assertEqual((t.margin_factor, t.delay_factor, t.lift), (0.5, 2.0, 0.0))
+
+    def test_borrowing_ramps_over_the_idle_time_of_the_class_above(self):
+        self.assertEqual(g.terms("normal", {"high": 120}, self.cfg).lift, 0.0)
+        self.assertAlmostEqual(g.terms("normal", {"high": 360}, self.cfg).lift, 0.5)
+        self.assertEqual(g.terms("normal", {"high": 600}, self.cfg).lift, 1.0)
+        self.assertEqual(g.terms("normal", {}, self.cfg).lift, 1.0)
+
+    def test_low_climbs_one_class_at_a_time(self):
+        self.assertEqual(g.terms("low", {"normal": 0, "high": 99999}, self.cfg).lift, 0.0)
+        t = g.terms("low", {"normal": 99999, "high": 360}, self.cfg)
+        self.assertAlmostEqual(t.lift, 1.5)
+        self.assertAlmostEqual(t.margin_factor, 0.75)
+        self.assertAlmostEqual(t.delay_factor, 1.5)
+        self.assertEqual(g.terms("low", {}, self.cfg).lift, 2.0)
+
+    def test_terms_scale_the_margin_and_stretch_the_delay(self):
+        cache_ = cache(self.now, five=(70, 3 * 3600))
+        [own] = g.paces(cache_, self.cfg, self.now, g.terms("low", {"normal": 0}, self.cfg))
+        [acct] = g.paces(cache_, self.cfg, self.now)
+        self.assertEqual((own.margin, own.delay_seconds), (0.0, 120.0))
+        self.assertEqual((acct.margin, acct.delay_seconds), (20.0, 30.0))
+
+    def test_idle_above_ignores_the_session_itself_and_keeps_the_freshest_call(self):
+        entries = [{"id": "me", "priority": "high", "last_call": self.now},
+                   {"id": "a", "priority": "high", "last_call": self.now - 500},
+                   {"id": "b", "priority": "high", "last_call": self.now - 50},
+                   {"id": "c", "priority": "low", "last_call": self.now - 5}]
+        self.assertEqual(g.idle_above(entries, "me", self.now), {"high": 50.0, "low": 5.0})
+
 
 class CodexTest(unittest.TestCase):
     def setUp(self):
@@ -174,6 +220,25 @@ class CodexTest(unittest.TestCase):
 
     def test_brief_is_empty_when_nothing_is_known(self):
         self.assertEqual(g.report(g.load_config(), self.now)["brief"], "")
+
+    def test_report_lists_live_sessions_with_their_terms_and_holds(self):
+        ug = Path(os.environ["UG_DIR"]); (ug / "sessions").mkdir(parents=True)
+        (ug / "usage.json").write_text(json.dumps(cache(self.now, five=(70, 3 * 3600))))
+        for sid, prio, last, hold in (("aaa", "high", self.now - 5, None), ("bbb", "low", self.now - 60,
+                                       {"label": "5h", "until": int(self.now + 600), "kind": "threshold"}),
+                                      ("old", "high", self.now - 99999, None)):
+            (ug / "sessions" / f"{sid}.json").write_text(json.dumps({
+                "id": sid, "priority": prio, "cwd": "/w", "started": 0, "last_call": last,
+                "updated": last, "hold": hold, "pacing_seconds": 0, "lift": 0}))
+        rep = g.report(g.load_config(), self.now)
+        rows = {r["id"]: r for r in rep["claude"]["sessions"]}
+        self.assertEqual(set(rows), {"aaa", "bbb"})  # `old` is past session_stale_seconds
+        self.assertEqual(rows["aaa"]["delay_seconds"], 30.0)
+        self.assertEqual(rows["bbb"]["lift"], 1.0)  # no normal session, a busy high one
+        self.assertEqual(rows["bbb"]["delay_seconds"], 60.0)
+        self.assertEqual(rows["bbb"]["hold"]["window"], "5h")
+        self.assertEqual(rep["claude"]["hold"]["until"], int(self.now + 600))
+        self.assertIn("HOLD on 5h", rep["brief"])
 
     def test_brief_flags_pacing_and_advises_fewer_steps(self):
         ug = Path(os.environ["UG_DIR"]); ug.mkdir()

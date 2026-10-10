@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""ug — control the Claude Code usage guard.
+"""ug — control the usage guard.
 
-  ug status [--json]     guard state, live usage for Claude and Codex, pace lines, any hold
+  ug status [--json]     guard state, live usage for Claude and Codex, pace lines, sessions, any hold
   ug brief               the one-line position agents receive at every prompt
+  ug sessions            live Claude sessions: priority, what they borrow, last call, holds
+  ug priority P [ID]     set a session's priority (low, normal, high); ID is a session-id prefix,
+                         optional when one session is live
   ug on | off            enable / disable the guard
   ug threshold [W PCT]   show, or set, the threshold for window 5h or 7d
   ug pace                show pacing settings
   ug pace on | off       enable / disable pacing (the threshold hold stays)
   ug pace mode M         delay (slow each call) or hold (wait until back on pace)
   ug pace margin W PCT   how far ahead of the pace line window 5h or 7d may run
-  ug pace set KEY VALUE  pace_min_used_pct, pace_seconds_per_pct, pace_max_delay_seconds
-  ug codex install       add the guard's hooks to Codex (~/.codex/hooks.json) and trust them
-  ug codex trusted       exit 0 when Codex has the hooks and trusts them, 1 otherwise
+  ug pace set KEY VALUE  any numeric pacing or priority setting (see `ug config`)
+  ug install             install the Claude Code plugin from this checkout and drop the legacy hooks
+  ug codex install       add the guard's hook to Codex (~/.codex/hooks.json) and trust it
+  ug codex trusted       exit 0 when Codex has the hook and trusts it, 1 otherwise
   ug release             release an in-progress hold right now
   ug config              print effective settings as JSON
 """
@@ -19,6 +23,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -27,9 +33,12 @@ sys.dont_write_bytecode = True  # keep the shared layer free of __pycache__
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import guardlib as g  # noqa: E402
 
+HERE = Path(__file__).resolve().parent
 WINDOW_ARGS = {"5h": "threshold_5h", "7d": "threshold_7d"}
 MARGIN_ARGS = {"5h": "pace_margin_5h", "7d": "pace_margin_7d"}
-PACE_SET_KEYS = ("pace_min_used_pct", "pace_seconds_per_pct", "pace_max_delay_seconds")
+PACE_SET_KEYS = tuple(k for k, v in g.DEFAULTS.items()
+                      if (k.startswith("pace_") or k.startswith("priority_") or k.startswith("borrow_"))
+                      and isinstance(v, (int, float)) and not isinstance(v, bool))
 COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
 
 
@@ -65,12 +74,9 @@ def cmd_threshold(args):
     window, raw = args
     if window not in WINDOW_ARGS:
         return fail(f"unknown window {window!r} (expected 5h or 7d)")
-    try:
-        value = float(raw)
-    except ValueError:
-        return fail(f"threshold must be a number, got {raw!r}")
-    if not 0 <= value <= 100:
-        return fail(f"threshold must be between 0 and 100, got {value:g}")
+    value, err = parse_pct(raw, "threshold")
+    if err:
+        return err
     g.save_config({WINDOW_ARGS[window]: value})
     print(f"{window} threshold set to {value:g}%")
     return 0
@@ -83,8 +89,8 @@ def cmd_release():
         state = {}
     state["release_at"] = now
     g.atomic_write(g.state_path(), state)
-    marker = g.read_json(g.blocked_path())
-    if isinstance(marker, dict):
+    rep = g.report(g.load_config(), now)
+    if rep["claude"]["hold"] or rep["codex"]["hold"]:
         print("released the active hold")
     else:
         print("no hold active; the next one will not be released by this")
@@ -114,7 +120,7 @@ def cmd_pace(args):
         for window, key in MARGIN_ARGS.items():
             print(f"margin {window:<4}{cfg[key]:g}% ahead of the pace line")
         for key in PACE_SET_KEYS:
-            print(f"{key:<24}{cfg[key]:g}")
+            print(f"{key:<30}{cfg[key]:g}")
         return 0
     verb, rest = args[0], args[1:]
     if verb in ("on", "off") and not rest:
@@ -152,9 +158,8 @@ def cmd_pace(args):
 
 
 def cmd_codex(args):
-    here = Path(__file__).resolve().parent
     if args == ["install"]:
-        result = g.codex_install(here)
+        result = g.codex_install(HERE)
         print(f"hooks      {result['hooks']} guard hooks in {result['hooks_path']}")
         if result["trusted_now"]:
             print(f"trusted    {len(result['trusted_now'])} hook(s) recorded in {result['config_path']}")
@@ -162,11 +167,142 @@ def cmd_codex(args):
             print("trusted    already recorded")
         return 0
     if args == ["trusted"]:
-        ok = g.codex_trusted(here)
+        ok = g.codex_trusted(HERE)
         print("codex hooks " + (paint("installed and trusted", "32") if ok else paint("missing or untrusted", "33")))
         return 0 if ok else 1
     return fail("usage: ug codex <install|trusted>")
 
+
+# --- install: the Claude Code plugin, and the legacy hooks out of settings.json ---
+
+def claude_settings_path() -> Path:
+    env = os.environ.get("UG_CLAUDE_SETTINGS")
+    return Path(env) if env else Path.home() / ".claude" / "settings.json"
+
+
+def strip_legacy_settings(path: Path) -> list:
+    """Removes the command hooks and statusline the guard used to need. Returns what went."""
+    doc = g.read_json(path)
+    if not isinstance(doc, dict):
+        return []
+    removed = []
+    hooks = doc.get("hooks")
+    if isinstance(hooks, dict):
+        for event in ("PreToolUse", "UserPromptSubmit"):
+            groups = hooks.get(event)
+            if not isinstance(groups, list):
+                continue
+            kept = []
+            for group in groups:
+                handlers = group.get("hooks") if isinstance(group, dict) else None
+                if isinstance(handlers, list) and any("usage-guard/" in str(h.get("command", "")) for h in handlers if isinstance(h, dict)):
+                    removed.append(f"hooks.{event}")
+                    continue
+                kept.append(group)
+            if kept:
+                hooks[event] = kept
+            else:
+                hooks.pop(event, None)
+        if not hooks:
+            doc.pop("hooks", None)
+    status = doc.get("statusLine")
+    if isinstance(status, dict) and "usage-guard/statusline.py" in str(status.get("command", "")):
+        doc.pop("statusLine")
+        removed.append("statusLine")
+    if removed:
+        g.atomic_write(path, doc)
+    return removed
+
+
+def cmd_install():
+    claude = shutil.which("claude")
+    if not claude:
+        return fail("`claude` is not on PATH; install Claude Code first")
+    steps = (["plugin", "marketplace", "add", str(HERE)], ["plugin", "install", "usage-guard@usage-guard"])
+    for args in steps:
+        proc = subprocess.run([claude, *args], capture_output=True, text=True, timeout=120)
+        if proc.returncode != 0 and "already" not in (proc.stdout + proc.stderr).lower():
+            return fail(f"claude {' '.join(args)} failed:\n{proc.stdout}{proc.stderr}".rstrip())
+        print(f"claude     {' '.join(args)}")
+    removed = strip_legacy_settings(claude_settings_path())
+    print("settings   " + (f"removed legacy {', '.join(removed)} from {claude_settings_path()}" if removed else "no legacy entries"))
+    link = Path.home() / ".local" / "bin" / "ug"
+    if not (link.is_symlink() and link.resolve() == HERE / "ug"):
+        link.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if link.is_symlink() or link.exists():
+                link.unlink()
+            link.symlink_to(HERE / "ug")
+            print(f"cli        linked {link} -> {HERE / 'ug'}")
+        except OSError as err:
+            print(f"cli        could not link {link}: {err}")
+    print("plugin     usage-guard installed; new sessions load it, running ones after /reload-plugins")
+    return 0
+
+
+# --- sessions and priorities ----------------------------------------------------
+
+def lift_phrase(row) -> str:
+    lift, priority = row["lift"], row["priority"]
+    if lift < 0.05:
+        return ""
+    above = g.PRIORITIES[min(g.PRIORITIES.index(priority) + 1, 2)]
+    whole, partial = int(lift + 1e-9), lift - int(lift + 1e-9)
+    if whole >= 1 and partial < 0.05:
+        return f"running as {'high' if whole == 2 else above}"
+    return f"borrowing {partial * 100:.0f}% of {'high' if whole >= 1 else above}"
+
+
+def print_sessions(rows, now):
+    if not rows:
+        print("sessions   none live")
+        return
+    print(f"sessions   {len(rows)} live")
+    for row in rows:
+        text = f"  {str(row['id'])[:8]:<8} {paint(row['priority'], '1'):<{15 if COLOR else 6}} "
+        extra = lift_phrase(row)
+        text += f"{extra:<24} last call {g.fmt_duration(row['last_call_seconds_ago']) if row['last_call_seconds_ago'] >= 60 else str(row['last_call_seconds_ago']) + 's'} ago"
+        if row.get("delay_seconds"):
+            text += paint(f"  {row['delay_seconds']:.0f}s/call", "33")
+        if row.get("hold"):
+            clock = time.strftime("%H:%M", time.localtime(row["hold"]["until"]))
+            text += paint(f"  HOLD {row['hold']['window']} until {clock}", "1;31")
+        cwd = row.get("cwd") or ""
+        if cwd:
+            text += f"  {cwd.replace(str(Path.home()), '~', 1)}"
+        print(text)
+
+
+def cmd_sessions():
+    now = time.time()
+    print_sessions(g.report(g.load_config(), now)["claude"]["sessions"], now)
+    return 0
+
+
+def cmd_priority(args):
+    if not args:
+        return cmd_sessions()
+    priority = args[0]
+    if priority not in g.PRIORITIES:
+        return fail("usage: ug priority <low|normal|high> [session-id-prefix]")
+    now = time.time()
+    rows = g.report(g.load_config(), now)["claude"]["sessions"]
+    if len(args) > 2:
+        return fail("usage: ug priority <low|normal|high> [session-id-prefix]")
+    if len(args) == 2:
+        rows = [r for r in rows if str(r["id"]).startswith(args[1])]
+        if not rows:
+            return fail(f"no live session starts with {args[1]!r}")
+    if len(rows) != 1:
+        print_sessions(rows, now)
+        return fail("several sessions are live; name one by an id prefix")
+    if not g.set_session_priority(rows[0]["id"], priority):
+        return fail("that session's entry vanished")
+    print(f"{str(rows[0]['id'])[:8]} priority set to {priority}; it applies on the session's next tool call")
+    return 0
+
+
+# --- status -------------------------------------------------------------------------
 
 def cmd_brief():
     line = g.report(g.load_config())["brief"]
@@ -174,24 +310,18 @@ def cmd_brief():
     return 0
 
 
-def print_windows(windows, cfg, now, for_claude):
+def print_windows(windows):
     for w in windows:
         pct, line = w["used_pct"], w["pace_line_pct"]
-        threshold = w.get("threshold_pct")
-        if threshold is not None:
-            colour = "1;31" if pct >= threshold else ("33" if pct >= threshold * 0.66 else "32")
-            text = f"{w['window']:<10} {paint(f'{pct:.1f}%', colour)}  of {threshold:g}%"
-        else:
-            text = f"{w['window']:<10} {paint(f'{pct:.1f}%', '32')}"
-        text += f"  pace line {line:.0f}%"
+        threshold = w["threshold_pct"]
+        colour = "1;31" if pct >= threshold else ("33" if pct >= threshold * 0.66 else "32")
+        text = f"{w['window']:<10} {paint(f'{pct:.1f}%', colour)}  of {threshold:g}%  pace line {line:.0f}%"
         ahead = w["ahead_pct"]
         if ahead >= 0.5:
             text += paint(f" +{ahead:.0f}", "33")
-        if for_claude and w.get("pacing"):
+        if w.get("pacing"):
             text += paint(f"  PACING {w['delay_seconds']:.0f}s/call, back on pace in "
                           f"{g.fmt_duration(w['catchup_in_seconds'])}", "1;33")
-        elif not for_claude and w.get("ahead_of_pace"):
-            text += paint("  AHEAD OF PACE", "1;33")
         if w["resets_in_seconds"] > 0:
             clock = time.strftime("%H:%M", time.localtime(w["resets_at"]))
             text += f"  resets {clock} (in {g.fmt_duration(w['resets_in_seconds'])})"
@@ -212,65 +342,48 @@ def cmd_status(args):
     print(f"guard      {state}   pacing {pacing} ({cfg['pace_mode']})")
 
     claude = rep["claude"]
-    print(paint("claude", "1"))
+    print(paint("claude", "1") + "   (account terms; each session's own are under sessions)")
     if not claude["windows"]:
-        print("usage      no usage data yet (statusline has not seen a limit)")
+        print("usage      no usage data yet (no Claude session has reported a limit)")
     else:
-        print_windows(claude["windows"], cfg, now, True)
+        print_windows(claude["windows"])
         age = g.fmt_duration(claude.get("data_age_seconds", 0))
         print(f"data       {age} old" + ("  " + paint("STALE — guard fails open", "33") if claude["stale"] else ""))
+    print_sessions(claude["sessions"], now)
     codex = rep["codex"]
     print(paint("codex", "1"))
     if not codex["windows"]:
         print("usage      no Codex usage yet (no hook cache, no recent session log)")
     else:
-        print_windows(codex["windows"], cfg, now, True)
+        print_windows(codex["windows"])
         where = "live hook cache" if codex.get("source") == "hook" else "newest session log"
         print(f"data       {g.fmt_duration(codex.get('data_age_seconds', 0))} old ({where})")
-
-    for vendor in g.VENDORS:
-        marker = g.read_json(g.blocked_path(vendor))
-        if not isinstance(marker, dict):
-            continue
-        try:
-            until = float(marker["until"])
-        except (KeyError, TypeError, ValueError):
-            until = 0
-        if until > now:
-            clock = time.strftime("%H:%M", time.localtime(until))
-            print(paint(f"HOLD       {vendor}: active on {marker.get('label', '?')} "
-                        f"until {clock} (in {g.fmt_duration(until - now)})", "1;31"))
+    for vendor, name in ((claude, "claude"), (codex, "codex")):
+        hold = vendor.get("hold")
+        if hold:
+            clock = time.strftime("%H:%M", time.localtime(hold["until"]))
+            print(paint(f"HOLD       {name}: active on {hold['window']} until {clock} "
+                        f"(in {g.fmt_duration(hold['until'] - now)})", "1;31"))
             print("           run `ug release` to let the pending tool call through")
     return 0
 
 
+COMMANDS = {
+    "on": lambda args: cmd_on(), "off": lambda args: cmd_off(), "threshold": cmd_threshold,
+    "release": lambda args: cmd_release(), "config": lambda args: cmd_config(), "status": cmd_status,
+    "pace": cmd_pace, "codex": cmd_codex, "brief": lambda args: cmd_brief(), "install": lambda args: cmd_install(),
+    "sessions": lambda args: cmd_sessions(), "priority": cmd_priority,
+}
+
+
 def main(argv):
-    if not argv:
+    if not argv or argv[0] in ("-h", "--help", "help"):
         print(__doc__.strip())
         return 0
     command, args = argv[0], argv[1:]
-    if command in ("-h", "--help", "help"):
-        print(__doc__.strip())
-        return 0
-    if command == "on":
-        return cmd_on()
-    if command == "off":
-        return cmd_off()
-    if command == "threshold":
-        return cmd_threshold(args)
-    if command == "release":
-        return cmd_release()
-    if command == "config":
-        return cmd_config()
-    if command == "status":
-        return cmd_status(args)
-    if command == "pace":
-        return cmd_pace(args)
-    if command == "codex":
-        return cmd_codex(args)
-    if command == "brief":
-        return cmd_brief()
-    return fail(f"unknown command {command!r}; try `ug help`")
+    if command not in COMMANDS:
+        return fail(f"unknown command {command!r}; try `ug help`")
+    return COMMANDS[command](args)
 
 
 if __name__ == "__main__":

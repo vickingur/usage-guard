@@ -1,18 +1,20 @@
-"""Shared state and evaluation logic for the usage guard.
+"""Shared state and evaluation logic for the usage guard's Python side.
 
-The statusline is the only component Claude Code hands `rate_limits` to, so it
-writes what it sees into a cache file here; the hooks and the `ug` CLI read it
-back. Codex usage comes from the newest Codex session log, which records the
-rate limits the API returned with every turn.
+The Claude Code mod (hooks/register.tsx) is the guard for Claude: it reads the
+engine's rate limits directly, holds and paces tool calls in-process, and writes
+what it sees under the guard's directory. This module is what the `ug` CLI and
+the Codex hooks share: the config table, the pace math (mirrored from
+hooks/pace.ts and pinned to it by tests/test_parity.py), the Codex session-log
+reader, the session registry reader and the report.
 
-Two mechanisms sit on top of that data:
+Files under the guard's directory (UG_DIR, else ~/.claude/usage-guard):
 
-- the **threshold** hold: a window at or over its threshold stops tool calls
-  until it resets (see guard-hook.py);
-- **pacing**: a window whose usage runs ahead of its *pace line* by more than a
-  margin slows tool calls down so the budget lasts until the reset. The pace
-  line is the usage you would have at this instant if spend were spread evenly
-  across the window and landed exactly on the threshold at reset.
+    config.json          settings (ug writes, the mod and the hooks read)
+    usage.json           the account's Claude windows, as the mod last saw them
+    codex-usage.json     Codex's windows, written by the Codex hook
+    codex-blocked.json   Codex's live hold marker
+    state.json           `release_at`, written by `ug release`
+    sessions/<id>.json   one entry per live Claude session: priority, last call, hold
 """
 from __future__ import annotations
 
@@ -24,36 +26,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-DEFAULTS = {
-    "enabled": True,
-    "threshold_5h": 95.0,
-    "threshold_7d": 90.0,
-    "max_stall_seconds": 21600,
-    "poll_seconds": 5,
-    "stale_after_seconds": 600,
-    # Pacing. `pace_mode` is "delay" (sleep per tool call, proportional to how
-    # far ahead of the line usage is) or "hold" (block until back on pace).
-    "pace_enabled": True,
-    "pace_mode": "delay",
-    "pace_margin_5h": 20.0,
-    "pace_margin_7d": 15.0,
-    "pace_min_used_pct": 30.0,
-    "pace_seconds_per_pct": 5.0,
-    "pace_max_delay_seconds": 30.0,
-    # A Codex session log older than this no longer says anything about now;
-    # windows that have reset since the log was written are dropped anyway.
-    "codex_log_max_age_seconds": 7 * 86400,
-}
+HERE = Path(__file__).resolve().parent
+
+
+def _table(name: str, marker: str) -> dict:
+    """A JSON table kept in a TypeScript module as `export const X = <json>`."""
+    text = (HERE / "hooks" / name).read_text()
+    return json.loads(text.split(marker, 1)[1])
+
+
+DEFAULTS = _table("defaults.ts", "export const DEFAULTS =")
 
 PACE_MODES = ("delay", "hold")
+PRIORITIES = ("low", "normal", "high")
 
-# (key in the statusline payload, config key holding its threshold, display label)
+# (key in the cache, config key holding its threshold, display label, config key of its margin, length)
 WINDOWS = (
-    ("five_hour", "threshold_5h", "5h"),
-    ("seven_day", "threshold_7d", "7d"),
+    ("five_hour", "threshold_5h", "5h", "pace_margin_5h", 5 * 3600),
+    ("seven_day", "threshold_7d", "7d", "pace_margin_7d", 7 * 86400),
 )
-WINDOW_SECONDS = {"five_hour": 5 * 3600, "seven_day": 7 * 86400}
-PACE_MARGIN_KEY = {"five_hour": "pace_margin_5h", "seven_day": "pace_margin_7d"}
 # Codex reports `window_minutes`; map them onto the same two windows.
 CODEX_WINDOW_MINUTES = {300: "five_hour", 10080: "seven_day"}
 
@@ -67,6 +58,19 @@ class Violation:
 
 
 @dataclass(frozen=True)
+class Terms:
+    """What a session gets: a fraction of the window margin, a stretch on its delays,
+    and how far it has risen above its own class by borrowing (0 = own terms)."""
+
+    margin_factor: float
+    delay_factor: float
+    lift: float
+
+
+ACCOUNT_TERMS = Terms(1.0, 1.0, 0.0)
+
+
+@dataclass(frozen=True)
 class Pace:
     """Where one window stands against its pace line."""
 
@@ -77,11 +81,13 @@ class Pace:
     threshold: float
     line: float        # usage the pace line allows right now
     ahead: float       # pct - line; positive means spending faster than the line
-    margin: float      # how far ahead is tolerated
+    margin: float      # how far ahead is tolerated under the terms in force
     active: bool       # pacing is engaged for this window
     delay_seconds: float   # per-tool-call delay in "delay" mode (0 when inactive)
     catchup_at: int    # when the line reaches pct - margin, i.e. when pacing would release
 
+
+# --- paths -------------------------------------------------------------------
 
 def base_dir() -> Path:
     return Path(os.environ.get("UG_DIR") or (Path.home() / ".claude" / "usage-guard"))
@@ -91,11 +97,8 @@ def config_path() -> Path:
     return base_dir() / "config.json"
 
 
-VENDORS = ("claude", "codex")
-
-
 def cache_path(vendor: str = "claude") -> Path:
-    """Live usage cache: written by the statusline (claude) or the Codex hook (codex)."""
+    """Live usage cache: written by the mod (claude) or the Codex hook (codex)."""
     return base_dir() / ("usage.json" if vendor == "claude" else f"{vendor}-usage.json")
 
 
@@ -103,8 +106,12 @@ def state_path() -> Path:
     return base_dir() / "state.json"
 
 
-def blocked_path(vendor: str = "claude") -> Path:
-    return base_dir() / ("blocked.json" if vendor == "claude" else f"{vendor}-blocked.json")
+def codex_blocked_path() -> Path:
+    return base_dir() / "codex-blocked.json"
+
+
+def sessions_dir() -> Path:
+    return base_dir() / "sessions"
 
 
 def codex_sessions_dir() -> Path:
@@ -139,14 +146,31 @@ def atomic_write(path, obj) -> None:
         raise
 
 
-def load_config() -> dict:
+# --- config --------------------------------------------------------------------
+
+def parse_config(stored) -> dict:
+    """`stored` over the defaults: a key the table lacks, or a value of another
+    type than its default, is left at the default (the mod reads it the same way)."""
     cfg = dict(DEFAULTS)
-    stored = read_json(config_path(), {})
     if isinstance(stored, dict):
-        cfg.update({k: v for k, v in stored.items() if k in DEFAULTS})
+        for key, value in stored.items():
+            if key in cfg and _same_type(value, cfg[key]):
+                cfg[key] = value
     if cfg["pace_mode"] not in PACE_MODES:
         cfg["pace_mode"] = DEFAULTS["pace_mode"]
     return cfg
+
+
+def _same_type(value, default) -> bool:
+    if isinstance(default, bool):
+        return isinstance(value, bool)
+    if isinstance(default, (int, float)):
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return isinstance(value, type(default))
+
+
+def load_config() -> dict:
+    return parse_config(read_json(config_path(), {}))
 
 
 def save_config(updates: dict) -> dict:
@@ -158,6 +182,8 @@ def save_config(updates: dict) -> dict:
     return load_config()
 
 
+# --- pace math (mirrors hooks/pace.ts) --------------------------------------------
+
 def is_stale(cache, cfg, now: float) -> bool:
     if not isinstance(cache, dict) or "ts" not in cache:
         return True
@@ -167,24 +193,103 @@ def is_stale(cache, cfg, now: float) -> bool:
         return True
 
 
-def violations(cache, cfg, now: float) -> list[Violation]:
+def _reading(cache, key):
+    window = cache.get(key) if isinstance(cache, dict) else None
+    if not isinstance(window, dict):
+        return None
+    try:
+        return float(window["used_percentage"]), int(window["resets_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def violations(cache, cfg, now: float) -> list:
     """Windows at or over their threshold whose reset time is still in the future."""
     found = []
-    if not isinstance(cache, dict):
-        return found
-    for key, cfg_key, label in WINDOWS:
-        window = cache.get(key)
-        if not isinstance(window, dict):
+    for key, cfg_key, label, _margin_key, _length in WINDOWS:
+        reading = _reading(cache, key)
+        if reading is None:
             continue
-        try:
-            pct = float(window["used_percentage"])
-            resets_at = int(window["resets_at"])
-            threshold = float(cfg[cfg_key])
-        except (KeyError, TypeError, ValueError):
-            continue
+        pct, resets_at = reading
+        threshold = float(cfg[cfg_key])
         if pct >= threshold and resets_at > now:
             found.append(Violation(label, pct, resets_at, threshold))
     return found
+
+
+def pace_line(threshold: float, resets_at: float, window_seconds: float, now: float) -> float:
+    """Usage the pace line allows at `now`: threshold scaled by the elapsed fraction."""
+    remaining = min(max(resets_at - now, 0.0), window_seconds)
+    return threshold * (1.0 - remaining / window_seconds)
+
+
+def ramp(idle_seconds: float, after: float, full: float) -> float:
+    """0 before `after` seconds idle, 1 from `full`, linear between."""
+    if full <= after:
+        return 1.0 if idle_seconds >= after else 0.0
+    return min(1.0, max(0.0, (idle_seconds - after) / (full - after)))
+
+
+def _own_terms(priority: str, cfg) -> tuple:
+    if priority == "high":
+        return 1.0, 1.0
+    if priority == "normal":
+        return float(cfg["priority_margin_factor_normal"]), float(cfg["priority_delay_factor_normal"])
+    return float(cfg["priority_margin_factor_low"]), float(cfg["priority_delay_factor_low"])
+
+
+def terms(priority: str, idle_above: dict, cfg) -> Terms:
+    """The terms a session of `priority` runs under. `idle_above[class]` is how
+    long ago any other session of that class last made a tool call; a class with
+    no session is absent and counts as idle forever. A session borrows the next
+    class's terms progressively while that class is idle, and only once it has
+    them whole does it start on the class above."""
+    margin_factor, delay_factor = _own_terms(priority, cfg)
+    lift = 0.0
+    for above in PRIORITIES[PRIORITIES.index(priority) + 1:]:
+        idle = idle_above.get(above, float("inf"))
+        f = ramp(idle, float(cfg["borrow_after_seconds"]), float(cfg["borrow_full_seconds"]))
+        target_margin, target_delay = _own_terms(above, cfg)
+        margin_factor += f * (target_margin - margin_factor)
+        delay_factor += f * (target_delay - delay_factor)
+        lift += f
+        if f < 1.0:
+            break
+    return Terms(margin_factor, delay_factor, lift)
+
+
+def paces(cache, cfg, now: float, t: Terms = ACCOUNT_TERMS) -> list:
+    """One Pace per window present in the cache, whether or not pacing is engaged."""
+    out = []
+    enabled = bool(cfg["pace_enabled"])
+    min_used = float(cfg["pace_min_used_pct"])
+    per_pct = float(cfg["pace_seconds_per_pct"])
+    max_delay = float(cfg["pace_max_delay_seconds"])
+    for key, cfg_key, label, margin_key, length in WINDOWS:
+        reading = _reading(cache, key)
+        if reading is None:
+            continue
+        pct, resets_at = reading
+        threshold = float(cfg[cfg_key])
+        margin = float(cfg[margin_key]) * t.margin_factor
+        line = pace_line(threshold, resets_at, length, now)
+        ahead = pct - line
+        over = ahead - margin
+        active = enabled and resets_at > now and pct >= min_used and over > 0
+        delay = min(max_delay * t.delay_factor, over * per_pct * t.delay_factor) if active else 0.0
+        # The line reaches (pct - margin) when remaining = W * (1 - (pct - margin) / threshold).
+        if threshold <= 0 or pct - margin >= threshold:
+            catchup = resets_at
+        else:
+            catchup = int(resets_at - length * (1.0 - (pct - margin) / threshold))
+            catchup = max(int(now), min(catchup, resets_at))
+        out.append(Pace(key, label, pct, resets_at, threshold, line, ahead, margin, active, delay, catchup))
+    return out
+
+
+def pace_delay(pace_list) -> float:
+    """The per-call delay pacing asks for: the worst window wins."""
+    return max([p.delay_seconds for p in pace_list if p.active] or [0.0])
 
 
 def fmt_duration(seconds: float) -> str:
@@ -208,52 +313,50 @@ def _num(value, fallback):
         return float(fallback)
 
 
-def pace_line(threshold: float, resets_at: float, window_seconds: float, now: float) -> float:
-    """Usage the pace line allows at `now`: threshold scaled by the elapsed fraction."""
-    remaining = min(max(resets_at - now, 0.0), window_seconds)
-    return threshold * (1.0 - remaining / window_seconds)
+# --- the session registry (written by the mod) ----------------------------------
 
-
-def paces(cache, cfg, now: float) -> list:
-    """One Pace per window present in the cache, whether or not pacing is engaged."""
+def sessions(cfg, now: float) -> list:
+    """Every live Claude session's entry, as the mod wrote it; one not updated
+    within `session_stale_seconds` is left out."""
     out = []
-    if not isinstance(cache, dict):
+    try:
+        names = sorted(p for p in sessions_dir().iterdir() if p.suffix == ".json")
+    except OSError:
         return out
-    enabled = bool(cfg.get("pace_enabled", True))
-    min_used = _num(cfg.get("pace_min_used_pct"), DEFAULTS["pace_min_used_pct"])
-    per_pct = _num(cfg.get("pace_seconds_per_pct"), DEFAULTS["pace_seconds_per_pct"])
-    max_delay = _num(cfg.get("pace_max_delay_seconds"), DEFAULTS["pace_max_delay_seconds"])
-    for key, cfg_key, label in WINDOWS:
-        window = cache.get(key)
-        if not isinstance(window, dict):
+    for path in names:
+        entry = read_json(path)
+        if not isinstance(entry, dict) or entry.get("priority") not in PRIORITIES:
             continue
         try:
-            pct = float(window["used_percentage"])
-            resets_at = int(window["resets_at"])
+            if now - float(entry["updated"]) > float(cfg["session_stale_seconds"]):
+                continue
         except (KeyError, TypeError, ValueError):
             continue
-        threshold = _num(cfg.get(cfg_key), DEFAULTS[cfg_key])
-        margin = _num(cfg.get(PACE_MARGIN_KEY[key]), DEFAULTS[PACE_MARGIN_KEY[key]])
-        length = WINDOW_SECONDS[key]
-        line = pace_line(threshold, resets_at, length, now)
-        ahead = pct - line
-        over = ahead - margin
-        active = enabled and resets_at > now and pct >= min_used and over > 0
-        delay = min(max_delay, over * per_pct) if active else 0.0
-        # The line reaches (pct - margin) when remaining = W * (1 - (pct - margin) / threshold).
-        if threshold <= 0 or pct - margin >= threshold:
-            catchup = resets_at
-        else:
-            catchup = int(resets_at - length * (1.0 - (pct - margin) / threshold))
-            catchup = max(int(now), min(catchup, resets_at))
-        out.append(Pace(key, label, pct, resets_at, threshold, line, ahead, margin,
-                        active, delay, catchup))
+        out.append(entry)
     return out
 
 
-def pace_delay(pace_list) -> float:
-    """The per-call delay pacing asks for: the worst window wins."""
-    return max([p.delay_seconds for p in pace_list if p.active] or [0.0])
+def set_session_priority(session_id: str, priority: str) -> bool:
+    """Rewrites one session's priority in the registry; the mod picks it up on its next call."""
+    path = sessions_dir() / f"{session_id}.json"
+    entry = read_json(path)
+    if not isinstance(entry, dict):
+        return False
+    entry["priority"] = priority
+    atomic_write(path, entry)
+    return True
+
+
+def idle_above(entries, self_id: str, now: float) -> dict:
+    """Seconds since another session of each class last made a tool call."""
+    out = {}
+    for e in entries:
+        if e.get("id") == self_id:
+            continue
+        idle = max(0.0, now - _num(e.get("last_call"), 0))
+        if e["priority"] not in out or idle < out[e["priority"]]:
+            out[e["priority"]] = idle
+    return out
 
 
 # --- Codex -----------------------------------------------------------------
@@ -321,9 +424,9 @@ def limits_from_codex_log(path: Path, now: float) -> Optional[dict]:
 def codex_limits(now: float, max_age_seconds: float) -> Optional[dict]:
     """Codex usage: the hook's live cache when fresh, else the newest session log.
 
-    The Codex hooks write `codex-usage.json` from the running session's own
+    The Codex hook writes `codex-usage.json` from the running session's own
     transcript on every prompt and tool call; that is authoritative while Codex
-    is active. Without it (hooks not installed, or no session for a while) the
+    is active. Without it (hook not installed, or no session for a while) the
     newest log under ~/.codex/sessions stands in. None when neither says anything.
     """
     cached = read_json(cache_path("codex"))
@@ -348,41 +451,52 @@ def codex_limits(now: float, max_age_seconds: float) -> Optional[dict]:
 
 # --- reporting -------------------------------------------------------------
 
+def _window_rows(cache, cfg, now: float, t: Terms = ACCOUNT_TERMS) -> list:
+    rows = []
+    for p in paces(cache, cfg, now, t):
+        rows.append({
+            "window": p.label, "used_pct": round(p.pct, 1), "threshold_pct": p.threshold,
+            "resets_at": p.resets_at, "resets_in_seconds": max(0, p.resets_at - int(now)),
+            "pace_line_pct": round(p.line, 1), "ahead_pct": round(p.ahead, 1),
+            "margin_pct": round(p.margin, 1), "pacing": p.active,
+            "delay_seconds": round(p.delay_seconds, 1),
+            "catchup_in_seconds": max(0, p.catchup_at - int(now)) if p.active else 0,
+        })
+    return rows
+
+
 def report(cfg, now: Optional[float] = None) -> dict:
     """Everything an agent or a status command needs, as plain data."""
     now = time.time() if now is None else now
     cache = read_json(cache_path())
     stale = is_stale(cache, cfg, now)
-    claude = {"stale": stale, "windows": [], "hold": None}
+    claude = {"stale": stale, "windows": [], "hold": None, "sessions": []}
     if isinstance(cache, dict):
         claude["data_age_seconds"] = max(0, int(now - _num(cache.get("ts"), now)))
-        for p in paces(cache, cfg, now):
-            claude["windows"].append({
-                "window": p.label, "used_pct": round(p.pct, 1), "threshold_pct": p.threshold,
-                "resets_at": p.resets_at, "resets_in_seconds": max(0, p.resets_at - int(now)),
-                "pace_line_pct": round(p.line, 1), "ahead_pct": round(p.ahead, 1),
-                "margin_pct": p.margin, "pacing": p.active,
-                "delay_seconds": round(p.delay_seconds, 1),
-                "catchup_in_seconds": max(0, p.catchup_at - int(now)) if p.active else 0,
-            })
-    marker = read_json(blocked_path())
-    if isinstance(marker, dict) and _num(marker.get("until"), 0) > now:
-        claude["hold"] = {"window": marker.get("label"), "until": int(_num(marker["until"], 0))}
+        claude["windows"] = _window_rows(cache, cfg, now)
+    live = sessions(cfg, now)
+    for entry in live:
+        t = terms(entry["priority"], idle_above(live, entry.get("id"), now), cfg)
+        row = {
+            "id": entry.get("id"), "priority": entry["priority"], "cwd": entry.get("cwd", ""),
+            "last_call_seconds_ago": max(0, int(now - _num(entry.get("last_call"), now))),
+            "lift": round(t.lift, 2), "margin_factor": round(t.margin_factor, 2),
+            "delay_factor": round(t.delay_factor, 2), "hold": None,
+            "delay_seconds": round(pace_delay(paces(cache, cfg, now, t)), 1) if isinstance(cache, dict) and not stale else 0,
+        }
+        hold = entry.get("hold")
+        if isinstance(hold, dict) and _num(hold.get("until"), 0) > now:
+            row["hold"] = {"window": hold.get("label"), "until": int(_num(hold["until"], 0)), "kind": hold.get("kind")}
+            if claude["hold"] is None or row["hold"]["until"] > claude["hold"]["until"]:
+                claude["hold"] = dict(row["hold"])
+        claude["sessions"].append(row)
     codex = {"windows": [], "hold": None}
     codex_cache = codex_limits(now, _num(cfg.get("codex_log_max_age_seconds"), DEFAULTS["codex_log_max_age_seconds"]))
     if codex_cache:
         codex["data_age_seconds"] = max(0, int(now - codex_cache["ts"]))
         codex["source"] = codex_cache.get("source", "log")
-        for p in paces(codex_cache, cfg, now):
-            codex["windows"].append({
-                "window": p.label, "used_pct": round(p.pct, 1), "threshold_pct": p.threshold,
-                "resets_at": p.resets_at, "resets_in_seconds": max(0, p.resets_at - int(now)),
-                "pace_line_pct": round(p.line, 1), "ahead_pct": round(p.ahead, 1),
-                "margin_pct": p.margin, "pacing": p.active,
-                "delay_seconds": round(p.delay_seconds, 1),
-                "catchup_in_seconds": max(0, p.catchup_at - int(now)) if p.active else 0,
-            })
-    marker = read_json(blocked_path("codex"))
+        codex["windows"] = _window_rows(codex_cache, cfg, now)
+    marker = read_json(codex_blocked_path())
     if isinstance(marker, dict) and _num(marker.get("until"), 0) > now:
         codex["hold"] = {"window": marker.get("label"), "until": int(_num(marker["until"], 0))}
     return {
@@ -425,7 +539,9 @@ def brief_line(claude: dict, codex: dict, cfg) -> str:
     elif not cfg["pace_enabled"]:
         line += " · pacing off"
     if any(w.get("pacing") for w in claude["windows"] + codex["windows"]):
-        line += ". Spend is running ahead of the window: the guard hook is pacing each tool call for you, so keep working through the delays. Prefer fewer, larger steps; batch reads; defer fan-outs and long loops until back on pace. Pacing is never a reason to stop, pause or ask the user to continue."
+        line += (". Spend is running ahead of the window: the guard is pacing each tool call for you, so keep working "
+                 "through the delays. Prefer fewer, larger steps; batch reads; defer fan-outs and long loops until back "
+                 "on pace. Pacing is never a reason to stop, pause or ask the user to continue.")
     return line
 
 
@@ -484,15 +600,15 @@ def codex_guard_hooks(script_dir: Path) -> dict:
     base = str(script_dir).replace(str(Path.home()), "~", 1)
     return {
         "UserPromptSubmit": [{"hooks": [{"type": "command",
-            "command": f"python3 {base}/brief-hook.py --vendor codex", "timeout": 10}]}],
+            "command": f"python3 {base}/codex-hook.py --event user_prompt_submit", "timeout": 10}]}],
         "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command",
-            "command": f"python3 {base}/guard-hook.py --vendor codex", "timeout": 21700,
+            "command": f"python3 {base}/codex-hook.py --event pre_tool_use", "timeout": 21700,
             "statusMessage": "usage guard"}]}],
     }
 
 
 def _is_guard_hook(handler: dict) -> bool:
-    return "usage-guard/" in handler.get("command", "") and "--vendor codex" in handler.get("command", "")
+    return "usage-guard/" in handler.get("command", "")
 
 
 def codex_trust_entries(doc: dict, hooks_path: Path) -> dict:

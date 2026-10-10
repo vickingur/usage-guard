@@ -97,17 +97,101 @@ class UgTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("no usage data", proc.stdout.lower())
 
-    def test_status_reports_an_active_hold(self):
+    def write_session(self, sid, priority="normal", hold=None, last_call=None, cwd="/w"):
+        now = time.time()
+        (self.dir / "sessions").mkdir(exist_ok=True)
+        (self.dir / "sessions" / f"{sid}.json").write_text(json.dumps({
+            "id": sid, "priority": priority, "cwd": cwd, "started": now - 100, "last_call": last_call or now,
+            "updated": now, "hold": hold, "pacing_seconds": 0, "lift": 0}))
+
+    def test_status_reports_an_active_hold_of_a_session(self):
         self.write_cache(pct=99.0)
-        (self.dir / "blocked.json").write_text(json.dumps(
-            {"until": int(time.time() + 600), "label": "5h", "pct": 99.0}))
+        self.write_session("s1", hold={"label": "5h", "until": int(time.time() + 600), "kind": "threshold"})
         self.assertIn("HOLD", self.ug("status").stdout)
 
     def test_status_ignores_an_expired_hold(self):
         self.write_cache(pct=99.0)
-        (self.dir / "blocked.json").write_text(json.dumps(
-            {"until": int(time.time() - 5), "label": "5h", "pct": 99.0}))
+        self.write_session("s1", hold={"label": "5h", "until": int(time.time() - 5), "kind": "threshold"})
         self.assertNotIn("HOLD", self.ug("status").stdout)
+
+    # --- sessions and priorities --------------------------------------------
+
+    def test_sessions_lists_live_sessions_with_priority_and_borrowing(self):
+        self.write_cache(pct=70.0, resets_in=3 * 3600)
+        self.write_session("aaaaaaaa-1", "high")
+        self.write_session("bbbbbbbb-2", "low", cwd=str(Path.home() / "x"))
+        out = self.ug("sessions").stdout
+        self.assertIn("2 live", out)
+        self.assertIn("aaaaaaaa high", out)
+        self.assertIn("bbbbbbbb low", out)
+        self.assertIn("running as normal", out)  # high is busy, normal has nobody: low rises one class
+        self.assertIn("60s/call", out)
+        self.assertIn("~/x", out)
+
+    def test_priority_sets_the_only_live_session(self):
+        self.write_session("abc-1")
+        proc = self.ug("priority", "high")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads((self.dir / "sessions" / "abc-1.json").read_text())["priority"], "high")
+
+    def test_priority_needs_a_prefix_when_several_sessions_are_live(self):
+        self.write_session("abc-1")
+        self.write_session("xyz-2")
+        self.assertEqual(self.ug("priority", "low").returncode, 1)
+        self.assertEqual(self.ug("priority", "low", "xyz").returncode, 0)
+        self.assertEqual(json.loads((self.dir / "sessions" / "xyz-2.json").read_text())["priority"], "low")
+        self.assertEqual(json.loads((self.dir / "sessions" / "abc-1.json").read_text())["priority"], "normal")
+        self.assertEqual(self.ug("priority", "low", "nope").returncode, 1)
+
+    def test_priority_rejects_an_unknown_level(self):
+        self.write_session("abc-1")
+        self.assertEqual(self.ug("priority", "urgent").returncode, 1)
+
+    def test_priority_with_no_arguments_lists_sessions(self):
+        self.assertIn("none live", self.ug("priority").stdout)
+
+    def test_pace_set_accepts_the_priority_and_borrow_knobs(self):
+        self.assertEqual(self.ug("pace", "set", "priority_delay_factor_low", "3").returncode, 0)
+        self.assertEqual(self.ug("pace", "set", "borrow_after_seconds", "60").returncode, 0)
+        self.assertEqual(self.config()["borrow_after_seconds"], 60.0)
+        self.assertEqual(self.ug("pace", "set", "threshold_5h", "1").returncode, 1)
+
+    # --- install ------------------------------------------------------------
+
+    def test_install_registers_the_plugin_and_strips_the_legacy_settings(self):
+        bin_dir = self.dir / "bin"; bin_dir.mkdir()
+        log = self.dir / "claude.log"
+        fake = bin_dir / "claude"
+        fake.write_text(f"#!/bin/sh\necho \"$@\" >> {log}\n")
+        fake.chmod(0o755)
+        settings = self.dir / "settings.json"
+        settings.write_text(json.dumps({
+            "statusLine": {"type": "command", "command": "python3 ~/.claude/usage-guard/statusline.py"},
+            "hooks": {"PreToolUse": [
+                {"matcher": "*", "hooks": [{"type": "command", "command": "python3 ~/.claude/usage-guard/guard-hook.py"}]},
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": "python3 ~/mine.py"}]}],
+                "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 ~/.claude/usage-guard/brief-hook.py"}]}]},
+            "env": {"KEEP": "1"}}))
+        env = {**self.env, "PATH": f"{bin_dir}:{self.env['PATH']}", "UG_CLAUDE_SETTINGS": str(settings),
+               "HOME": str(self.dir)}
+        proc = subprocess.run([sys.executable, str(UG), "install"], capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        calls = log.read_text().splitlines()
+        self.assertEqual(calls[0], f"plugin marketplace add {UG.parent}")
+        self.assertEqual(calls[1], "plugin install usage-guard@usage-guard")
+        doc = json.loads(settings.read_text())
+        self.assertNotIn("statusLine", doc)
+        self.assertNotIn("UserPromptSubmit", doc["hooks"])
+        self.assertEqual(doc["hooks"]["PreToolUse"][0]["matcher"], "Bash")
+        self.assertEqual(doc["env"], {"KEEP": "1"})
+        self.assertTrue((self.dir / ".local" / "bin" / "ug").is_symlink())
+        self.assertIn("removed legacy hooks.PreToolUse, hooks.UserPromptSubmit, statusLine", proc.stdout)
+
+    def test_install_fails_without_claude_on_path(self):
+        env = {**self.env, "PATH": str(self.dir)}
+        proc = subprocess.run([sys.executable, str(UG), "install"], capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("claude", proc.stderr)
 
     def test_config_emits_valid_json_of_effective_settings(self):
         cfg = json.loads(self.ug("config").stdout)

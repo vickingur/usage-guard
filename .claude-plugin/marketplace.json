@@ -1,0 +1,14 @@
+{
+  "name": "usage-guard",
+  "owner": {
+    "name": "vickingur"
+  },
+  "plugins": [
+    {
+      "name": "usage-guard",
+      "source": "./",
+      "description": "Usage guard: threshold hold, pacing and session priorities for Claude Code."
+    }
+  ],
+  "description": "Usage guard for Claude Code: threshold hold, pacing and session priorities."
+}

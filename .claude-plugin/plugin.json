@@ -1,0 +1,22 @@
+{
+  "name": "usage-guard",
+  "version": "1.0.0",
+  "description": "Holds tool calls at a usage threshold, paces them before it, and lets sessions run at low, normal or high priority.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "priority": {
+      "title": "Default priority",
+      "type": "string",
+      "options": [
+        "low",
+        "normal",
+        "high"
+      ],
+      "default": "normal",
+      "description": "Priority a new session starts at (UG_PRIORITY in the environment overrides it)."
+    }
+  },
+  "author": {
+    "name": "vickingur"
+  }
+}
