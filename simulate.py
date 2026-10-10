@@ -314,8 +314,10 @@ class Simulation:
         if w.start["seven_day"] is not None:
             line = g.pace_line(float(self.cfg["threshold_7d"]), MONDAY + w.start["seven_day"] + w.length["seven_day"],
                                w.length["seven_day"], MONDAY + t, self.profile)
-        self.samples.append((t, w.used["five_hour"] if w.start["five_hour"] is not None else 0.0,
-                             w.used["seven_day"] if w.start["seven_day"] is not None else 0.0, line))
+        # A window whose reset has passed with no call since holds nothing any more.
+        live = {key: w.start[key] is not None and t < w.start[key] + w.length[key] for key in w.start}
+        self.samples.append((t, w.used["five_hour"] if live["five_hour"] else 0.0,
+                             w.used["seven_day"] if live["seven_day"] else 0.0, line))
 
     def report(self) -> dict:
         everyone = self.sessions + self.gone
@@ -424,7 +426,7 @@ def render_compare(reps: list) -> str:
 
 def main(argv) -> int:
     ap = argparse.ArgumentParser(prog="ug sim", description=__doc__.split("\n\n")[0])
-    ap.add_argument("--scenario", choices=sorted(SCENARIOS) + ["all"], default="mixed")
+    ap.add_argument("--scenario", choices=list(SCENARIOS) + ["all"], default="mixed")
     ap.add_argument("--policy", choices=POLICIES, default="priority")
     ap.add_argument("--compare", action="store_true", help="run every policy on the same seed")
     ap.add_argument("--days", type=float, default=7.0)
@@ -458,7 +460,7 @@ def main(argv) -> int:
             shaped["pace_profile_days"], shaped["pace_profile_hours"] = list(WORKWEEK.days), list(WORKWEEK.hours)
         cfgs.append(g.parse_config(shaped))
     policies = POLICIES if args.compare else (args.policy,)
-    names = sorted(SCENARIOS) if args.scenario == "all" else [args.scenario]
+    names = list(SCENARIOS) if args.scenario == "all" else [args.scenario]
     reps = [Simulation(SCENARIOS[name], policy, args.days, args.dt, args.seed, cfg).run()
             for cfg in cfgs for name in names for policy in policies]
     if args.html:
