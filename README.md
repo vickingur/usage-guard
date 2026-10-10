@@ -114,6 +114,7 @@ on Sunday night is not. The 5h window keeps the even line.
 ```
 ug pace profile                      show it
 ug pace profile workweek             Mon-Fri weight 1, weekends 0.3; 8h-23h weight 1, night 0.1
+ug pace profile weekend              Mon-Thu 0.3, Fri 0.5, Sat-Sun 1; the same hours
 ug pace profile days 1,1,1,1,1,0,0   a weight per day, Monday first
 ug pace profile hours 9-18,20-23     active hours get weight 1, the rest 0.1
 ug pace profile uniform              back to the even line
@@ -147,9 +148,11 @@ ug sim --scenario all --html sim.html
 | `batch` | one interactive high session beside three low batch runners that rarely pause |
 | `burst` | six heavy sessions for two days, then quiet |
 | `workweek` | sessions come and go in office hours, Monday to Friday, a little at the weekend; the run starts on a Monday |
+| `weekend` | light weekdays, a heavy weekend; the week window is anchored to a Monday 21:00 reset |
 
-`--profile workweek` makes the guard's 7d pace line follow the work-week
-profile instead of the even line, for any scenario.
+`--profile workweek|weekend` makes the guard's 7d pace line follow that
+profile instead of the even line, for any scenario; `--profile all` runs each
+(with `--html` or `--json`).
 
 `--compare` runs `none` (no guard), `threshold`, `pace` (account terms) and
 `priority` (each session's terms with borrowing) on the same seed, and reports

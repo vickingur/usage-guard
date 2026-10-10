@@ -58,12 +58,17 @@ class Scenario:
     cost_5h: float            # % of the 5h window one call costs
     cost_7d: float            # % of the 7d window one call costs
     activity: Optional[g.Profile] = None   # when set, arrivals and waking follow this weekly profile
+    start_hour: float = 0.0   # hour of Monday the run (and the 7d window) starts at, local time
 
 
-# The run starts on a Monday at 00:00 in the simulated local time (offset 0),
-# so a weekly profile lines up with its days.
+# The run starts on a Monday in the simulated local time (offset 0), at the
+# scenario's `start_hour`, so a weekly profile lines up with its days; the 7d
+# window is anchored there and resets a week later, as a continuously used
+# account's does.
 MONDAY = 345600.0
 WORKWEEK = g.Profile((1.0,) * 5 + (0.3, 0.3), (0.1,) * 8 + (1.0,) * 15 + (0.1,))
+WEEKEND = g.Profile((0.3, 0.3, 0.3, 0.3, 0.5, 1.0, 1.0), (0.1,) * 8 + (1.0,) * 15 + (0.1,))
+PROFILES = {"uniform": g.UNIFORM, "workweek": WORKWEEK, "weekend": WEEKEND}
 
 
 INTERACTIVE = Profile(calls_per_minute=1.5, work_mean_s=15 * 60, think_mean_s=15 * 60, life_mean_s=6 * H)
@@ -82,6 +87,9 @@ SCENARIOS = {
     # A working week: sessions come and go in office hours Monday to Friday, a little at the weekend.
     "workweek": Scenario("workweek", (), 1.2, 4, {"high": 0.3, "normal": 0.5, "low": 0.2},
                          {p: INTERACTIVE for p in g.PRIORITIES}, 0.1, 0.009, WORKWEEK),
+    # Light weekdays, heavy weekend, the week resetting Monday 21:00.
+    "weekend": Scenario("weekend", (), 2.0, 6, {"high": 0.3, "normal": 0.5, "low": 0.2},
+                        {p: INTERACTIVE for p in g.PRIORITIES}, 0.1, 0.009, WEEKEND, 21.0),
 }
 
 
@@ -91,7 +99,7 @@ class Windows:
     def __init__(self, cost_5h: float, cost_7d: float):
         self.cost = {"five_hour": cost_5h, "seven_day": cost_7d}
         self.length = {"five_hour": 5 * H, "seven_day": 7 * D}
-        self.start = {"five_hour": None, "seven_day": None}
+        self.start = {"five_hour": None, "seven_day": 0.0}
         self.used = {"five_hour": 0.0, "seven_day": 0.0}
         self.resets = {"five_hour": 0, "seven_day": 0}
         self.peak = {"five_hour": 0.0, "seven_day": 0.0}
@@ -176,6 +184,7 @@ class Simulation:
         self.sc, self.policy, self.days, self.dt, self.seed = scenario, policy, days, dt, seed
         self.cfg = cfg or g.parse_config({})
         self.profile = g.profile_of(self.cfg, 0)
+        self.origin = MONDAY + scenario.start_hour * H   # wall clock at t = 0
         self.rng = random.Random(seed)
         self.windows = Windows(scenario.cost_5h, scenario.cost_7d)
         self.sessions: list = []
@@ -199,8 +208,8 @@ class Simulation:
             return 0.0, ""
         # The guard's math runs on wall-clock seconds so the weekly profile lines
         # up with its days; the registry and the run keep the simulation's own clock.
-        clock = t + MONDAY
-        cache = {k: ({"used_percentage": v["used_percentage"], "resets_at": v["resets_at"] + MONDAY} if isinstance(v, dict) else v)
+        clock = t + self.origin
+        cache = {k: ({"used_percentage": v["used_percentage"], "resets_at": v["resets_at"] + self.origin} if isinstance(v, dict) else v)
                  for k, v in cache.items()}
         vio = g.violations(cache, self.cfg, clock)
         if vio:
@@ -266,7 +275,7 @@ class Simulation:
         if p.life_mean_s != math.inf and r.random() < dt / p.life_mean_s:
             s.state = "done"
             return
-        activity = 1.0 if self.sc.activity is None else self.sc.activity.weight_at(MONDAY + t)
+        activity = 1.0 if self.sc.activity is None else self.sc.activity.weight_at(self.origin + t)
         if s.state == "think":
             if r.random() < activity * dt / p.think_mean_s:
                 s.state = "work"
@@ -287,7 +296,7 @@ class Simulation:
             self.spawn(priority, 0.0)
         next_sample = 0.0
         while t < end:
-            activity = 1.0 if self.sc.activity is None else self.sc.activity.weight_at(MONDAY + t)
+            activity = 1.0 if self.sc.activity is None else self.sc.activity.weight_at(self.origin + t)
             for _ in range(poisson(self.rng, activity * self.sc.arrivals_per_hour * dt / H)):
                 if len(self.sessions) < self.sc.max_concurrent:
                     self.spawn(weighted(self.rng, self.sc.priority_mix), t)
@@ -312,8 +321,8 @@ class Simulation:
         w = self.windows
         line = None
         if w.start["seven_day"] is not None:
-            line = g.pace_line(float(self.cfg["threshold_7d"]), MONDAY + w.start["seven_day"] + w.length["seven_day"],
-                               w.length["seven_day"], MONDAY + t, self.profile)
+            line = g.pace_line(float(self.cfg["threshold_7d"]), self.origin + w.start["seven_day"] + w.length["seven_day"],
+                               w.length["seven_day"], self.origin + t, self.profile)
         # A window whose reset has passed with no call since holds nothing any more.
         live = {key: w.start[key] is not None and t < w.start[key] + w.length[key] for key in w.start}
         self.samples.append((t, w.used["five_hour"] if live["five_hour"] else 0.0,
@@ -345,8 +354,9 @@ class Simulation:
         return {
             "scenario": self.sc.name, "policy": self.policy, "days": self.days, "dt": self.dt, "seed": self.seed,
             "config": {k: v for k, v in self.cfg.items() if v != g.DEFAULTS[k] and not k.startswith("pace_profile_")},
-            "profile": "uniform" if self.profile.is_uniform() else "workweek" if (list(self.profile.days), list(self.profile.hours)) == (list(WORKWEEK.days), list(WORKWEEK.hours)) else "custom",
-            "activity": "uniform" if self.sc.activity is None else "workweek",
+            "profile": next((name for name, prof in PROFILES.items() if (list(prof.days), list(prof.hours)) == (list(self.profile.days), list(self.profile.hours))), "custom"),
+            "activity": next((name for name, prof in PROFILES.items() if prof is self.sc.activity), "uniform"),
+            "start": f"Monday {int(self.sc.start_hour):02d}:00",
             "windows": {
                 "five_hour": {"peak_pct": round(w.peak["five_hour"], 1), "resets": w.resets["five_hour"]},
                 "seven_day": {"end_pct": round(w.used["seven_day"], 1), "peak_pct": round(w.peak["seven_day"], 1),
@@ -434,8 +444,8 @@ def main(argv) -> int:
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                     help="override a guard setting for the run, e.g. pace_max_delay_seconds=120 or pace_mode=hold")
-    ap.add_argument("--profile", choices=("uniform", "workweek", "both"), default="uniform",
-                    help="the weekly profile the guard's 7d pace line follows; `both` runs each (with --html or --json)")
+    ap.add_argument("--profile", choices=("uniform", "workweek", "weekend", "all"), default="uniform",
+                    help="the weekly profile the guard's 7d pace line follows; `all` runs each (with --html or --json)")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--html", metavar="FILE", help="write a self-contained page of the runs (implies --compare)")
     args = ap.parse_args(argv)
@@ -451,13 +461,13 @@ def main(argv) -> int:
             overrides[key] = [float(v) for v in raw.split(",")]
         else:
             overrides[key] = raw if isinstance(default, str) else raw.lower() in ("1", "true", "on") if isinstance(default, bool) else float(raw)
-    if (args.scenario == "all" or args.profile == "both") and not args.html and not args.json:
-        ap.error("--scenario all and --profile both need --html or --json")
+    if (args.scenario == "all" or args.profile == "all") and not args.html and not args.json:
+        ap.error("--scenario all and --profile all need --html or --json")
     cfgs = []
-    for profile in (("uniform", "workweek") if args.profile == "both" else (args.profile,)):
+    for profile in (tuple(PROFILES) if args.profile == "all" else (args.profile,)):
         shaped = dict(overrides)
-        if profile == "workweek":
-            shaped["pace_profile_days"], shaped["pace_profile_hours"] = list(WORKWEEK.days), list(WORKWEEK.hours)
+        if profile != "uniform":
+            shaped["pace_profile_days"], shaped["pace_profile_hours"] = list(PROFILES[profile].days), list(PROFILES[profile].hours)
         cfgs.append(g.parse_config(shaped))
     policies = POLICIES if args.compare else (args.policy,)
     names = list(SCENARIOS) if args.scenario == "all" else [args.scenario]

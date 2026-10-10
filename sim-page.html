@@ -112,7 +112,7 @@ svg { width: 100%; height: auto; display: block; font: 11px var(--mono); }
   function renderRun() {
     const r = runsOf(scenario)[0]
     const over = Object.entries(r.config || {}).map(([k, v]) => `${k}=${v}`).join(' ')
-    $('run').innerHTML = `<span>scenario <b>${r.scenario}</b></span><span>sessions <b>${r.activity}</b></span><span>pace line <b>${r.profile}</b></span><span><b>${r.days}</b> days</span><span>step <b>${r.dt}s</b></span><span>seed <b>${r.seed}</b></span>${over ? `<span>overrides <b>${over}</b></span>` : ''}`
+    $('run').innerHTML = `<span>scenario <b>${r.scenario}</b></span><span>sessions <b>${r.activity}</b></span><span>from <b>${r.start}</b></span><span>pace line <b>${r.profile}</b></span><span><b>${r.days}</b> days</span><span>step <b>${r.dt}s</b></span><span>seed <b>${r.seed}</b></span>${over ? `<span>overrides <b>${over}</b></span>` : ''}`
   }
   function renderTabs() {
     $('tabs').innerHTML = scenarios.map(s => `<button class="tab" role="tab" id="tab-${s}" aria-selected="${s === scenario}">${s}</button>`).join('')

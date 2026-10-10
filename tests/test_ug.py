@@ -162,6 +162,8 @@ class UgTest(unittest.TestCase):
         self.assertEqual(self.ug("pace", "profile", "workweek").returncode, 0)
         self.assertEqual(self.config()["pace_profile_days"], [1.0] * 5 + [0.3, 0.3])
         self.assertIn("preset workweek", self.ug("pace", "profile").stdout)
+        self.assertEqual(self.ug("pace", "profile", "weekend").returncode, 0)
+        self.assertEqual(self.config()["pace_profile_days"][5:], [1.0, 1.0])
         self.assertEqual(self.ug("pace", "profile", "hours", "9-18,20-23").returncode, 0)
         hours = self.config()["pace_profile_hours"]
         self.assertEqual((hours[8], hours[9], hours[17], hours[18], hours[20], hours[23]), (0.1, 1.0, 1.0, 0.1, 1.0, 0.1))

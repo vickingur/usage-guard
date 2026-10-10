@@ -85,11 +85,21 @@ class SimulatorTest(unittest.TestCase):
         self.assertEqual(sum(s["calls"] for s in [r for r in profiled["priorities"].values()]) > 0, True)
         self.assertTrue(all(p["seven_day_pct"] == 0 for p in profiled["timeline"][:6]))
 
+    def test_the_weekend_scenario_starts_monday_evening_with_the_week_anchored_there(self):
+        rep = run("weekend", "none", days=7)
+        self.assertEqual(rep["start"], "Monday 21:00")
+        self.assertEqual(rep["activity"], "weekend")
+        week = [p["seven_day_pct"] for p in rep["timeline"]]
+        # light until Friday evening (4 days in), the bulk of the spend over the weekend, reset at the end
+        self.assertLess(week[4 * 24], 35)
+        self.assertGreater(week[6 * 24 + 20], 2 * week[4 * 24])
+        self.assertEqual(week[-1], 0.0)
+
     def test_the_profile_flag_and_list_overrides_reach_the_run(self):
-        proc = subprocess.run([sys.executable, str(UG), "sim", "--scenario", "solo", "--days", "0.5", "--dt", "60", "--profile", "workweek", "--json"],
+        proc = subprocess.run([sys.executable, str(UG), "sim", "--scenario", "solo", "--days", "0.5", "--dt", "60", "--profile", "weekend", "--json"],
                               capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(json.loads(proc.stdout)["profile"], "workweek")
+        self.assertEqual(json.loads(proc.stdout)["profile"], "weekend")
         proc = subprocess.run([sys.executable, str(UG), "sim", "--scenario", "solo", "--days", "0.5", "--dt", "60",
                                "--set", "pace_profile_days=1,1,1,1,1,0,0", "--json"], capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 0, proc.stderr)
