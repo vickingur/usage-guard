@@ -415,12 +415,19 @@ const blockPhrase = (view: UsageGuardView): string => {
     `, hold at ${Math.round(w.threshold)}%` + (w.etaHoldSeconds === undefined ? '' : ` (about ${fmtDuration(w.etaHoldSeconds)})`)
 }
 
-/** One leading mark for the guard's state: ● fine, ⧖ pacing, ⊘ held, ○ off, ~ old figures, · no data. */
+// Footer marks. ⧖ and ↻ draw double-width in some terminal fonts and collide
+// with the next cell, so pacing is ◔ and the reset share an eighth-block bar.
+const SUP: Record<string, string> = { '5h': '⁵ʰ', '7d': '⁷ᵈ' }
+const sup = (label: string): string => SUP[label] ?? label
+const EIGHTHS = ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█']
+const elapsedBar = (pct: number): string => EIGHTHS[Math.min(7, Math.max(0, Math.round((pct / 100) * 8) - 1))] ?? '▏'
+
+/** One leading mark for the guard's state: ● fine, ◔ pacing, ⊘ held, ○ off, ~ old figures, · no data. */
 const stateGlyph = (view: UsageGuardView | null): { glyph: string; color: 'success' | 'warning' | 'error' | 'subtle'; bold: boolean } => {
   if (view === null || view.windows.length === 0) return { glyph: '·', color: 'subtle', bold: false }
   if (!view.enabled) return { glyph: '○', color: 'warning', bold: false }
-  if (view.hold !== null) return { glyph: '⊘', color: view.hold.kind === 'pace' ? 'warning' : 'error', bold: true }
-  if (view.pacing !== null && view.pacing.delaySeconds > 0) return { glyph: '⧖', color: 'warning', bold: true }
+  if (view.hold !== null) return { glyph: view.hold.kind === 'pace' ? '◔' : '⊘', color: view.hold.kind === 'pace' ? 'warning' : 'error', bold: true }
+  if (view.pacing !== null && view.pacing.delaySeconds > 0) return { glyph: '◔', color: 'warning', bold: true }
   if (view.stale) return { glyph: '~', color: 'subtle', bold: false }
   if (!view.paceEnabled) return { glyph: '○', color: 'warning', bold: false }
   return { glyph: '●', color: 'success', bold: false }
@@ -633,58 +640,62 @@ export const register: Register = (on, options) => {
     const near = view === null ? undefined : nearest(view)
     const isPacing = pacing !== null && pacing.delaySeconds > 0
     return (
-      <Box flexDirection="row" gap={1}>
+      <Box flexDirection="row" gap={2}>
         {e.props.modes.length > 0 && <Text dimColor>{e.props.modes.join(' & ')}</Text>}
-        <Text color={state.color} bold={state.bold}>{state.glyph}</Text>
-        {view === null || view.windows.length === 0 ? (
-          <Text dimColor>no data</Text>
-        ) : (
-          view.windows.map(w => (
-            <Box gap={0}>
-              <Text dimColor>{w.label} </Text>
-              <Text color={view.stale ? undefined : pctColor(w.pct, w.threshold)} dimColor={view.stale}>
-                {Math.round(w.pct)}%
-              </Text>
-              {w.ahead >= 0.5 && (
-                <Text color={w.pacing ? 'warning' : undefined} dimColor={!w.pacing} bold={w.pacing}>
-                  +{Math.round(w.ahead)}
-                  {w.pacing ? '▲' : ''}
+        <Box gap={1}>
+          <Text color={state.color} bold={state.bold}>{state.glyph}</Text>
+          {view === null || view.windows.length === 0 ? (
+            <Text dimColor>no data</Text>
+          ) : (
+            view.windows.map(w => (
+              <Box gap={0}>
+                <Text dimColor>{sup(w.label)}</Text>
+                <Text color={view.stale ? undefined : pctColor(w.pct, w.threshold)} dimColor={view.stale}>
+                  {Math.round(w.pct)}%
                 </Text>
-              )}
-              <Text dimColor>
-                {' '}↻{fmtDuration(w.resetsIn)}·{w.elapsedPct}%
-              </Text>
-            </Box>
-          ))
-        )}
-        {view !== null && view.stale && view.windows.length > 0 && <Text dimColor>~{fmtDuration(view.ageSeconds)}</Text>}
-        {view !== null && view.codex.length > 0 && (
-          <Text dimColor>cx {view.codex.map(w => `${Math.round(w.pct)}%`).join('/')}</Text>
-        )}
-        {hold !== null && (
-          <Text color={hold.kind === 'pace' ? 'warning' : 'error'} bold>
-            {hold.kind === 'pace' ? '⧖' : '⊘'} {fmtDuration(hold.until - nowSeconds)} →{fmtClock(hold.until)}
-          </Text>
-        )}
-        {hold === null && isPacing && pacing !== null && (
-          <Text color="warning" bold>
-            ⧖{Math.round(pacing.delaySeconds)}s ↺{fmtDuration(pacing.backIn)}
-          </Text>
-        )}
-        {hold === null && near !== undefined && !isPacing && (
-          <Text dimColor>
-            ⧖{near.label}@{Math.round(near.paceAt)}%{near.etaPaceSeconds === undefined ? '' : `~${fmtDuration(near.etaPaceSeconds)}`}
-          </Text>
-        )}
-        {hold === null && near !== undefined && (
-          <Text dimColor>
-            ⊘@{Math.round(near.threshold)}%{near.etaHoldSeconds === undefined ? '' : `~${fmtDuration(near.etaHoldSeconds)}`}
-          </Text>
-        )}
+                {w.ahead >= 0.5 && (
+                  <Text color={w.pacing ? 'warning' : undefined} dimColor={!w.pacing} bold={w.pacing}>
+                    +{Math.round(w.ahead)}
+                    {w.pacing ? '▲' : ''}
+                  </Text>
+                )}
+                <Text dimColor>
+                  {' '}{elapsedBar(w.elapsedPct)}{w.elapsedPct}% {fmtDuration(w.resetsIn)}
+                </Text>
+              </Box>
+            ))
+          )}
+          {view !== null && view.stale && view.windows.length > 0 && <Text dimColor>~{fmtDuration(view.ageSeconds)}</Text>}
+          {view !== null && view.codex.length > 0 && (
+            <Text dimColor>cx {view.codex.map(w => `${Math.round(w.pct)}%`).join('/')}</Text>
+          )}
+        </Box>
+        <Box gap={1}>
+          {hold !== null && (
+            <Text color={hold.kind === 'pace' ? 'warning' : 'error'} bold>
+              {hold.kind === 'pace' ? '◔' : '⊘'} {fmtDuration(hold.until - nowSeconds)} →{fmtClock(hold.until)}
+            </Text>
+          )}
+          {hold === null && isPacing && pacing !== null && (
+            <Text color="warning" bold>
+              ◔{Math.round(pacing.delaySeconds)}s ↺{fmtDuration(pacing.backIn)}
+            </Text>
+          )}
+          {hold === null && near !== undefined && !isPacing && (
+            <Text dimColor>
+              ◔{sup(near.label)}@{Math.round(near.paceAt)}%{near.etaPaceSeconds === undefined ? '' : `~${fmtDuration(near.etaPaceSeconds)}`}
+            </Text>
+          )}
+          {hold === null && near !== undefined && (
+            <Text dimColor>
+              ⊘@{Math.round(near.threshold)}%{near.etaHoldSeconds === undefined ? '' : `~${fmtDuration(near.etaHoldSeconds)}`}
+            </Text>
+          )}
+        </Box>
         <Box gap={0}>
-          <Button key="priority-down" plain hotkey="o" label="‹" onPress={() => void stepPriority($, -1)} />
+          <Button key="priority-down" plain label="‹" onPress={() => void stepPriority($, -1)} />
           <Text> {liftGlyph(priority, view?.lift ?? 0)} </Text>
-          <Button key="priority-up" plain hotkey="p" label="›" onPress={() => void stepPriority($, 1)} />
+          <Button key="priority-up" plain label="›" onPress={() => void stepPriority($, 1)} />
         </Box>
       </Box>
     )

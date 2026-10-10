@@ -124,7 +124,7 @@ class UgTest(unittest.TestCase):
         self.assertIn("2 live", out)
         self.assertIn("aaaaaaaa △ high", out)
         self.assertIn("bbbbbbbb ▽ low ⇡◇", out)
-        self.assertIn("⧖60s", out)
+        self.assertIn("◔60s", out)
         self.assertIn("~/x", out)
 
     def test_priority_sets_the_only_live_session(self):

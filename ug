@@ -268,10 +268,10 @@ def print_sessions(rows, now):
         ago = row["last_call_seconds_ago"]
         text = f"  {str(row['id'])[:8]:<8} {lift_phrase(row):<16} {g.fmt_duration(ago) if ago >= 60 else f'{ago}s'} ago"
         if row.get("delay_seconds"):
-            text += paint(f"  ⧖{row['delay_seconds']:.0f}s", "33")
+            text += paint(f"  ◔{row['delay_seconds']:.0f}s", "33")
         if row.get("hold"):
             clock = time.strftime("%H:%M", time.localtime(row["hold"]["until"]))
-            text += paint(f"  {'⧖' if row['hold'].get('kind') == 'pace' else '⊘'}{row['hold']['window']}→{clock}", "1;31")
+            text += paint(f"  {'◔' if row['hold'].get('kind') == 'pace' else '⊘'}{row['hold']['window']}→{clock}", "1;31")
         cwd = row.get("cwd") or ""
         if cwd:
             text += f"  {cwd.replace(str(Path.home()), '~', 1)}"

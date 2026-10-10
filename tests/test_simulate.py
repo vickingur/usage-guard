@@ -78,7 +78,7 @@ class SimulatorTest(unittest.TestCase):
         text = sim.render(reps[3])
         self.assertIn("sim mixed · 0.5d · seed 1 · policy priority", text)
         self.assertIn("△ high", text)
-        self.assertIn("⧖", text)
+        self.assertIn("◔", text)
         table = sim.render_compare(reps)
         self.assertEqual(len([l for l in table.splitlines() if l.startswith(("none", "threshold", "pace", "priority"))]), 4)
 

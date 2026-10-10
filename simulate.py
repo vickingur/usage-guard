@@ -373,7 +373,7 @@ def render(rep: dict) -> str:
                  f" · peak {w['seven_day']['peak_pct']:.0f}% · ahead of line {w['seven_day']['ahead_of_line_share'] * 100:.0f}% of the time")
     lines.append(f"5h  {strip(five)}  peak {w['five_hour']['peak_pct']:.0f}% · {w['five_hour']['resets']} resets"
                  f" · held {hours(w['held_h'])} · wall {hours(w['wall_h'])}")
-    lines.append(f"{'':<10}{'sess':>5}{'calls':>7}{'nom/h':>7}{'got/h':>7}{'wait µ':>8}{'p95':>7}{'⧖':>7}{'⊘':>7}{'wall':>7}{'⇡':>6}")
+    lines.append(f"{'':<10}{'sess':>5}{'calls':>7}{'nom/h':>7}{'got/h':>7}{'wait µ':>8}{'p95':>7}{'◔':>7}{'⊘':>7}{'wall':>7}{'⇡':>6}")
     for priority, row in rep["priorities"].items():
         lines.append(f"{GLYPH[priority]} {priority:<8}{row['sessions']:>5}{row['calls']:>7}{row['nominal_per_hour']:>7.0f}"
                      f"{row['got_per_hour']:>7.0f}{row['wait_mean_s']:>7.0f}s{row['wait_p95_s']:>6.0f}s"

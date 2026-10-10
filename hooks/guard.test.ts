@@ -270,7 +270,7 @@ describe('priority: command and band', () => {
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'usage-guard', surface, component: 'SessionMode', props: { modes: ['focus'] } })
       expect(await ui.find({ type: 'Text', text: /70%/ })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: /↻3h00m·40%/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /▍40% 3h00m/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /⊘@95%/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /focus/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /◇ normal ⇡△/ })).toBeDefined()
@@ -323,9 +323,9 @@ describe('prompt.submit and session.measure', () => {
     expect(entered.context?.[0]).toContain('pacing starts at 39% on 5h (about 3h2')
     expect(entered.context?.[0]).toContain('at the current rate), hold at 95% (about 3h0')
     const ui = await $.ui.mount({ plugin: 'usage-guard', surface: 'desktop', component: 'SessionMode', props: { modes: [] } })
-    expect(await ui.find({ type: 'Text', text: /⧖5h@39%~3h2\dm/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /◔⁷ᵈ@39%|◔⁵ʰ@39%~3h2\dm/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /⊘@95%~3h0\dm/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /↻4h00m·20%/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /▎20% 4h00m/ })).toBeDefined()
     await ui.unmount()
   })
 
