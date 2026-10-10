@@ -94,15 +94,16 @@ class CodexHookTest(CodexFixture):
     def test_guard_hook_holds_codex_at_the_threshold_until_the_reset(self):
         (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1}))
         now = time.time()
+        until = int(now) + 3  # two to three seconds away; the hook may return only once it has passed
         limits = {"limit_id": "codex", "primary": {"used_percent": 99.0, "window_minutes": 10080, "resets_at": int(now + 5 * 86400)},
-                  "secondary": {"used_percent": 99.0, "window_minutes": 300, "resets_at": int(now + 2)}}
+                  "secondary": {"used_percent": 99.0, "window_minutes": 300, "resets_at": until}}
         lines = [json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {}, "rate_limits": limits}})]
         self.transcript.parent.mkdir(parents=True, exist_ok=True)
         self.transcript.write_text("\n".join(lines) + "\n")
         (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "threshold_7d": 100}))
-        proc, took = self.invoke(HOOK, self.payload("PreToolUse", tool_name="Bash", tool_input={}), *PRE)
+        proc, _ = self.invoke(HOOK, self.payload("PreToolUse", tool_name="Bash", tool_input={}), *PRE)
+        self.assertGreaterEqual(time.time(), until)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertGreaterEqual(took, 1.5)
         self.assertNotIn("deny", proc.stdout)
         self.assertFalse((self.dir / "codex-blocked.json").exists())
 
