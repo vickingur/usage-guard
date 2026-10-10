@@ -22,11 +22,15 @@ class SimulatorTest(unittest.TestCase):
         bare = run("burst", "none", days=2)
         self.assertGreater(bare["windows"]["wall_h"], 0)
         self.assertGreaterEqual(bare["windows"]["five_hour"]["peak_pct"], 100.0)
+        # A call released from a pace delay runs without re-checking the threshold,
+        # as in the mod, so each concurrent session may land one call past it.
+        sc = sim.SCENARIOS["burst"]
+        slack = len(sc.initial)
         for policy in ("threshold", "pace", "priority"):
             rep = run("burst", policy, days=2)
             self.assertEqual(rep["windows"]["wall_h"], 0, policy)
-            self.assertLessEqual(rep["windows"]["five_hour"]["peak_pct"], 95 + sim.SCENARIOS["burst"].cost_5h, policy)
-            self.assertLessEqual(rep["windows"]["seven_day"]["peak_pct"], 90 + sim.SCENARIOS["burst"].cost_7d, policy)
+            self.assertLessEqual(rep["windows"]["five_hour"]["peak_pct"], 95 + slack * sc.cost_5h, policy)
+            self.assertLessEqual(rep["windows"]["seven_day"]["peak_pct"], 90 + slack * sc.cost_7d, policy)
 
     def test_priority_policy_serves_high_sessions_first_in_a_burst(self):
         rep = run("burst", "priority", days=2, pace_max_delay_seconds=120)
