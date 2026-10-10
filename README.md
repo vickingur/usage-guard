@@ -16,8 +16,9 @@ For Codex it is a pair of command hooks. A small Python CLI, `ug`, drives both.
   call until it resets, or until `ug release`, `ug off`, or a raised
   threshold. The model burns nothing while stalled.
 - **Pacing.** Before the threshold, a window running ahead of its *pace line*
-  by more than a margin delays each tool call in proportion, and the model is
-  told why and advised to take fewer, larger steps.
+  by more than a margin holds each tool call until the line has caught up,
+  and the model is told why and advised to take fewer, larger steps. (`delay`
+  mode slows calls by a capped delay instead.)
 - **Priorities.** Each Claude session runs at `low`, `normal` or `high`.
   Lower priorities are paced earlier and harder, and borrow a higher class's
   terms progressively while that class sits idle on the machine.
@@ -82,15 +83,22 @@ spread evenly across the window and landed exactly on the threshold at reset.
 Two hours into a 5h window with a 95% threshold the line is 38%. The window is
 **ahead** by `used - line`. Pacing engages when ahead exceeds the session's
 **margin** and usage is at least `pace_min_used_pct` (30%, so a burst right
-after a reset is left alone). Each call then sleeps `pace_seconds_per_pct` per
-point over the margin, capped at `pace_max_delay_seconds`; both scaled by the
-session's **delay factor**.
+after a reset is left alone). The session then waits, as its pace mode says
+(below), its margin and **delay factor** set by its priority.
 
 | Priority | Margin | Delay | Example: 2h into 5h at 70% (32 ahead) |
 |---|---|---|---|
 | high | the window's (20 / 15) | x1 | 12 over, 30s per call (the cap) |
 | normal | half | x2 | 22 over, 60s per call |
 | low | none | x4 | 32 over, 120s per call |
+
+**Pace modes.** In `hold` mode, the default, a paced call waits until the
+line has reached usage less the session's margin: the resume time the footer
+shows as `◔ 41m →14:00`. Usage is re-read every poll, so another session's
+spend moves it and `ug release` ends it. In `delay` mode each call sleeps
+`pace_seconds_per_pct` per point over the margin, capped at
+`pace_max_delay_seconds`, scaled by the delay factor: a slowdown rather than
+a wait. Nothing is ever denied in either mode.
 
 **Borrowing.** Sessions on one machine see each other through
 `~/.claude/usage-guard/sessions/`. A session below `high` watches the class
@@ -191,12 +199,11 @@ A hook has ten seconds of its own time per dispatch, but time spent inside an
 engine call is free. The guard therefore waits on the host (`sleep`, present on
 every macOS and Linux) in chunks of `poll_seconds`, re-reading config, usage and
 `state.json` between chunks, so every escape hatch takes effect within one
-poll. A threshold hold lasts until the window resets, however far away that
-is: Esc, `ug release` and `ug off` are the ways out, and nothing is denied.
-Should the hook itself be lost mid-hold, its fallback refuses the call rather
-than letting it through; a fault while merely pacing lets the call run. (The
-Codex command hook has a timeout, so there a hold longer than
-`max_stall_seconds` ends in a deny that names the reset.)
+poll. A threshold hold lasts until the window resets and a pace hold until
+the line has caught up, however far away that is: Esc, `ug release` and `ug
+off` are the ways out, and nothing is ever denied. A fault in the guard lets
+the call run. The Codex hook is installed with a timeout of eight days for
+the same reason.
 
 Overhead when nothing is ahead: a few file reads per tool call, in-process. The
 registry is re-read at most every five seconds.
@@ -211,7 +218,7 @@ registry is re-read at most every five seconds.
     ug threshold [W PCT]   show, or set, the threshold for 5h or 7d
     ug pace                show pacing settings
     ug pace on | off       enable / disable pacing (the threshold hold stays)
-    ug pace mode M         delay or hold
+    ug pace mode M         hold (wait until back on pace) or delay (a capped slowdown)
     ug pace margin W PCT   how far ahead of the pace line window W may run
     ug pace set KEY VALUE  any numeric pacing, priority or borrow setting
     ug sim [...]           simulate sessions against the policy (below)
@@ -231,16 +238,15 @@ Inside a session: `/ug`, `/ug priority`, `/ug priority low|normal|high`.
 | `threshold_5h` | `95.0` | Hold when the 5h window reaches this percent |
 | `threshold_7d` | `90.0` | Hold when the 7d window reaches this percent, until the last day |
 | `threshold_7d_release_hours` | `24` | Over the final hours of the week the hold level climbs from `threshold_7d` to 100%, linearly; 0 keeps it flat |
-| `max_stall_seconds` | `21600` | Cap on a pace hold (it ends in an allow) and on the Codex hook's threshold hold; the mod's threshold hold has no cap |
 | `poll_seconds` | `5` | How often a hold or delay re-checks for release |
 | `stale_after_seconds` | `600` | Usage older than this is ignored (fails open) |
 | `pace_enabled` | `true` | Pacing on or off |
-| `pace_mode` | `"delay"` | `delay` or `hold` |
+| `pace_mode` | `"hold"` | `hold` (wait until back on pace) or `delay` (a capped slowdown per call) |
 | `pace_margin_5h` | `20.0` | Points ahead of the 5h pace line a high session may run |
 | `pace_margin_7d` | `15.0` | Same for the weekly window |
 | `pace_min_used_pct` | `30.0` | Pacing never engages below this usage |
-| `pace_seconds_per_pct` | `5.0` | Delay per point over the margin |
-| `pace_max_delay_seconds` | `30.0` | Cap on the per-call delay at delay factor 1 |
+| `pace_seconds_per_pct` | `5.0` | `delay` mode: delay per point over the margin |
+| `pace_max_delay_seconds` | `30.0` | `delay` mode: cap on the per-call delay at delay factor 1 |
 | `pace_profile_days` | seven `1`s | Weight per day of the week for the 7d pace line, Monday first |
 | `pace_profile_hours` | twenty-four `1`s | Weight per hour of the day, local time |
 | `priority_margin_factor_normal` | `0.5` | A normal session's share of the margin |

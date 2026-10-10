@@ -693,7 +693,7 @@ def codex_guard_hooks(script_dir: Path) -> dict:
         "UserPromptSubmit": [{"hooks": [{"type": "command",
             "command": f"python3 {base}/codex-hook.py --event user_prompt_submit", "timeout": 10}]}],
         "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command",
-            "command": f"python3 {base}/codex-hook.py --event pre_tool_use", "timeout": 21700,
+            "command": f"python3 {base}/codex-hook.py --event pre_tool_use", "timeout": 8 * 86400,
             "statusMessage": "usage guard"}]}],
     }
 

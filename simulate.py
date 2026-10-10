@@ -16,6 +16,9 @@ Policies, all through guardlib (the same math the mod runs):
     pace        hold, plus pacing on the account terms (every session alike)
     priority    hold, plus pacing on each session's own terms with borrowing
 
+Pacing holds a call until the pace line has caught up (the default, `pace_mode
+hold`) or slows it by a capped delay (`--set pace_mode=delay`).
+
 `ug sim [--scenario S] [--policy P | --compare] [--days D] [--seed N] [--set KEY=VALUE] [--json]`.
 """
 from __future__ import annotations
@@ -227,7 +230,7 @@ class Simulation:
             active = [x for x in pace if x.active]
             if not active:
                 return 0.0, ""
-            wait = min(max(x.catchup_at for x in active) - clock, float(self.cfg["max_stall_seconds"]))
+            wait = max(x.catchup_at for x in active) - clock
             return wait, "pace"
         delay = g.pace_delay(pace)
         return delay, "pace" if delay > 0 else ""

@@ -83,7 +83,7 @@ const fiveHour = (w: World, pct: number, resetsIn = 3 * H): SessionRateLimit[] =
 ]
 
 const config = (w: World, extra: Record<string, unknown> = {}): void =>
-  w.write('config.json', { poll_seconds: 5, ...extra })
+  w.write('config.json', { poll_seconds: 5, pace_mode: 'delay', ...extra })
 
 const start = async ($: Parameters<Parameters<typeof test>[1] extends (a: infer A, ...r: never[]) => unknown ? A : never>[0] extends never ? never : any, w: World, limits: SessionRateLimit[]) => {
   w.limits = limits
@@ -174,6 +174,43 @@ describe('tool.call: pacing', () => {
   })
 })
 
+describe('tool.call: hold mode (the default)', () => {
+  test('a call 12 over the margin waits until the line has caught up, then runs with context', async ($, on) => {
+    const w = world(on, { priorityEnv: 'high' })
+    w.write('config.json', { poll_seconds: 60 })
+    await start($, w, fiveHour(w, 70))
+    const ran = await callBash($)
+    expect(ran.deny).toBe(undefined)
+    // the line reaches 50 (70 less the 20 margin) 2273s after a 2h-in reading: 38 polls of 60s, then one second at the crossing
+    expect(w.sleeps.length).toBe(39)
+    expect(ran.context?.[0]).toContain('this call was held 37m')
+    expect(ran.context?.[0]).toContain('back on pace')
+  })
+
+  test('a low session holds longer: its margin is nil, so the line must reach its usage', async ($, on) => {
+    const w = world(on, { priorityEnv: 'low' })
+    w.write('config.json', { poll_seconds: 60 })
+    w.write('sessions/other.json', { id: 'other', priority: 'normal', cwd: '/o', started: 0, last_call: w.nowSeconds(), updated: w.nowSeconds(), hold: null, pacing_seconds: 0, lift: 0 })
+    await start($, w, fiveHour(w, 70))
+    await callBash($)
+    // the line reaches 70 after 6063s: 102 polls, then one second at the crossing
+    expect(w.sleeps.length).toBe(103)
+    const entry = w.read('sessions/me.json') as { hold: null }
+    expect(entry.hold).toBe(null)
+  })
+
+  test('`ug release` ends a pace hold at once', async ($, on) => {
+    const w = world(on, { priorityEnv: 'high' })
+    w.write('config.json', { poll_seconds: 5 })
+    await start($, w, fiveHour(w, 70))
+    w.beforeSleep = count => {
+      if (count === 3) w.write('state.json', { release_at: w.nowSeconds() + 1 })
+    }
+    await callBash($)
+    expect(w.sleeps.length).toBe(4)
+  })
+})
+
 describe('tool.call: the threshold hold', () => {
   test('at the threshold the call stalls and runs once `ug release` fires', async ($, on) => {
     const w = world(on)
@@ -202,9 +239,9 @@ describe('tool.call: the threshold hold', () => {
     expect(w.sleeps.length).toBeGreaterThan(1)
   })
 
-  test('the hold has no budget: it lasts until the reset, however far away', async ($, on) => {
+  test('the hold lasts until the reset, however far away, and nothing is denied', async ($, on) => {
     const w = world(on)
-    config(w, { max_stall_seconds: 12 })
+    config(w)
     await start($, w, fiveHour(w, 96, 60))
     const ran = await callBash($)
     expect(ran.deny).toBe(undefined)

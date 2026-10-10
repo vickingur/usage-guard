@@ -10,7 +10,7 @@
   ug threshold [W PCT]   show, or set, the threshold for window 5h or 7d
   ug pace                show pacing settings
   ug pace on | off       enable / disable pacing (the threshold hold stays)
-  ug pace mode M         delay (slow each call) or hold (wait until back on pace)
+  ug pace mode M         hold (wait until back on pace) or delay (a capped slowdown per call)
   ug pace margin W PCT   how far ahead of the pace line window 5h or 7d may run
   ug pace set KEY VALUE  any numeric pacing or priority setting (see `ug config`)
   ug pace profile        show the weekly profile the 7d pace line follows

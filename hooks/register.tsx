@@ -1,8 +1,10 @@
 // The usage guard as a Claude Code mod.
 //
-// `tool.call` is the guard: a window at or over its threshold stalls the call
+// `tool.call` is the guard: a window at or over its hold level stalls the call
 // until it resets (or `ug release`, `ug off`, a raised threshold); a window
-// ahead of its pace line by more than this session's margin delays the call.
+// ahead of its pace line by more than this session's margin holds the call
+// until the line has caught up (or, in delay mode, slows it by a capped delay).
+// Nothing is ever denied.
 // The waits run on the host (`sleep`), so they stay outside the hook's own
 // ten-second budget, and every poll re-reads config and usage.
 //
@@ -27,7 +29,6 @@ import {
   type SessionEntry,
   type Terms,
   type Usage,
-  type Violation,
   WINDOWS,
   fmtClock,
   fresher,
@@ -247,17 +248,12 @@ const burnRate = (key: string): number | undefined => {
   return rate > 0 ? rate : undefined
 }
 
-type Verdict = { deny?: string; context?: string }
+type Verdict = { context?: string }
 
 // Module state: lost on a hot reload and rebuilt by session.start, which fires again then.
 let live: Live | undefined
 let lastViewJson = ''
 let defaultPriority: Priority = 'normal'
-// Why a tool call being held would be refused if this hook were lost mid-hold
-// (its .catch answers in its place); absent while pacing or idle, so a fault
-// there lets the call through.
-const holdReasons = new Map<string, string>()
-
 const seconds = async ($: EngineInterface): Promise<number> => (await $.clock.now()) / 1000
 
 /** Local offset from UTC in minutes, as the profile wants it (east positive). */
@@ -488,19 +484,9 @@ const paceContext = (entered: readonly Pace[], priority: Priority, t: Terms, cfg
   )
 }
 
-const denyText = (current: readonly Violation[], worst: Violation, waited: number): string => {
-  const labels = current.map(v => `${v.label} at ${Math.round(v.pct)}%`).join(', ')
-  const d = new Date(worst.resetsAt * 1000)
-  const clock = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${fmtClock(worst.resetsAt)}`
-  return (
-    `Usage guard: ${labels} (hold level ${Math.round(worst.threshold)}%). Held for ${fmtDuration(waited)}; the guard could not keep ` +
-    `holding this call, so it is refused. Stop and wait for the reset at ${clock}, or run \`ug off\` to disable the guard.`
-  )
-}
-
 // --- the guard ------------------------------------------------------------
 
-const guard = async ($: EngineInterface, toolUseId: string, signal: AbortSignal): Promise<Verdict> => {
+const guard = async ($: EngineInterface, signal: AbortSignal): Promise<Verdict> => {
   const p = await paths($)
   const s = session()
   let cfg = await loadConfig($, p)
@@ -521,7 +507,6 @@ const guard = async ($: EngineInterface, toolUseId: string, signal: AbortSignal)
   }
 
   const clearHold = async (): Promise<void> => {
-    holdReasons.delete(toolUseId)
     if (s.hold === null) return
     s.hold = null
     s.pacingSeconds = 0
@@ -530,17 +515,15 @@ const guard = async ($: EngineInterface, toolUseId: string, signal: AbortSignal)
 
   let current = violations(usage, cfg, now)
   if (current.length > 0) {
-    // The hold lasts until the window resets: there is no budget and no deny
-    // on this path (Esc, `ug release` and `ug off` are the ways out). The deny
-    // text is kept only for the .catch fallback, should the hook be lost mid-hold.
+    // The hold lasts until the window resets: no budget, nothing denied; Esc,
+    // `ug release` and `ug off` are the ways out.
     const start = now
     for (;;) {
       const worst = current.reduce((a, b) => (b.resetsAt > a.resetsAt ? b : a))
       s.hold = { label: current.map(v => v.label).join('+'), until: worst.resetsAt, kind: 'threshold' }
-      holdReasons.set(toolUseId, denyText(current, worst, now - start))
       await touch($, p, now, true)
       await publish($, p, cfg, usage, now, ACCOUNT_TERMS)
-      await hostSleep($, Math.min(cfg.poll_seconds, worst.resetsAt - now), signal)
+      await hostSleep($, Math.max(1, Math.min(cfg.poll_seconds, worst.resetsAt - now)), signal)
       if (signal.aborted) {
         await clearHold()
         return {}
@@ -548,7 +531,7 @@ const guard = async ($: EngineInterface, toolUseId: string, signal: AbortSignal)
       now = await seconds($)
       cfg = await loadConfig($, p)
       if (!cfg.enabled || (await releasedSince($, p, start))) break
-      usage = await currentUsage($, p, now, s.lastMeasureAt)
+      usage = await currentUsage($, p, now, now) // stalled, this session cannot refresh its reading; it stays current for what it spent
       if (isStale(usage, cfg, now)) break
       current = violations(usage, cfg, now)
       if (current.length === 0) break
@@ -578,15 +561,17 @@ const guard = async ($: EngineInterface, toolUseId: string, signal: AbortSignal)
     return { context: paceContext(entered, priority, t, cfg, now - start, now) }
   }
 
-  const deadline = start + cfg.max_stall_seconds
+  // Hold mode: the call waits until the line has caught up with usage less
+  // this session's margin, re-reading usage every poll (another session's
+  // spend moves the catch-up time).
   for (;;) {
     const active = list.filter(one => one.active)
-    if (active.length === 0 || now >= deadline) break
+    if (active.length === 0) break
     const worst = active.reduce((a, b) => (b.catchupAt > a.catchupAt ? b : a))
     s.hold = { label: `pace ${active.map(one => one.label).join('+')}`, until: worst.catchupAt, kind: 'pace' }
     await touch($, p, now, true)
     await publish($, p, cfg, usage, now, t)
-    await hostSleep($, Math.min(cfg.poll_seconds, deadline - now, worst.catchupAt - now), signal)
+    await hostSleep($, Math.max(1, Math.min(cfg.poll_seconds, worst.catchupAt - now)), signal) // never a sub-second spin while the line crosses
     if (signal.aborted) {
       await clearHold()
       return {}
@@ -594,7 +579,7 @@ const guard = async ($: EngineInterface, toolUseId: string, signal: AbortSignal)
     now = await seconds($)
     cfg = await loadConfig($, p)
     if (!cfg.enabled || !cfg.pace_enabled || (await releasedSince($, p, start))) break
-    usage = await currentUsage($, p, now, s.lastMeasureAt)
+    usage = await currentUsage($, p, now, now) // as in the threshold hold
     if (isStale(usage, cfg, now)) break
     list = paces(usage, cfg, now, t, profileOf(cfg, localOffsetMinutes()))
   }
@@ -630,17 +615,11 @@ export const register: Register = (on, options) => {
   defaultPriority = isPriority(options['priority']) ? options['priority'] : 'normal'
 
   on('tool.call', async ($, e, next) => {
-    const verdict = await guard($, e.tool_use_id, next.signal)
-    if (verdict.deny !== undefined) return { deny: verdict.deny }
+    const verdict = await guard($, next.signal)
     const ran = await next(e)
     if (verdict.context === undefined || ran.deny !== undefined) return ran
     return { ...ran, context: [...(ran.context ?? []), verdict.context] }
-  }).catch(($, e, next) => {
-    if (next.called) return next(e)
-    const reason = holdReasons.get(e.tool_use_id)
-    holdReasons.delete(e.tool_use_id)
-    return reason === undefined ? next(e) : { deny: reason }
-  })
+  }).catch(($, e, next) => (next.called ? next(e) : next(e))) // a fault in the guard never refuses a call
 
   // --- the band above the prompt ---
 
