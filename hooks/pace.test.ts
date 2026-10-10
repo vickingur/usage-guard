@@ -5,7 +5,9 @@ import {
   type Config,
   type Priority,
   type SessionEntry,
+  WINDOWS,
   fmtDuration,
+  holdLevel,
   idleAbove,
   mergeUsage,
   nextPriority,
@@ -46,6 +48,7 @@ describe('parity cases (hooks/pace-cases.ts, shared with tests/test_parity.py)',
         expect(p.active).toBe(want.active)
         expect(round(p.delaySeconds)).toBe(want.delaySeconds)
         expect(p.active ? p.catchupAt - c.now : 0).toBe(want.catchup_in)
+        expect(round(p.holdAt)).toBe(want.holdAt)
       })
     })
   }
@@ -92,6 +95,34 @@ describe('weekly profile', () => {
   test('a profile of the wrong length is left at the default', () => {
     expect(parseConfig({ pace_profile_days: [1, 2] }).pace_profile_days.length).toBe(7)
     expect(parseConfig({ pace_profile_hours: Array(24).fill(-1) }).pace_profile_hours[0]).toBe(1)
+  })
+})
+
+describe('the weekly hold level', () => {
+  const cfg = parseConfig({})
+  const week = WINDOWS[1]
+  if (week === undefined) throw new Error('no week')
+
+  test('stays at the threshold until the release window, then climbs to 100 at the reset', () => {
+    const reset = 1_000_000
+    expect(holdLevel(cfg, week, reset, reset - 3 * 86400)).toBe(90)
+    expect(holdLevel(cfg, week, reset, reset - 24 * 3600)).toBe(90)
+    expect(holdLevel(cfg, week, reset, reset - 12 * 3600)).toBe(95)
+    expect(holdLevel(cfg, week, reset, reset - 6 * 3600)).toBe(97.5)
+    expect(holdLevel(cfg, week, reset, reset)).toBe(100)
+    expect(holdLevel(parseConfig({ threshold_7d_release_hours: 0 }), week, reset, reset - 60)).toBe(90)
+  })
+
+  test('the 5h window never releases, and violations use the released level', () => {
+    const five = WINDOWS[0]
+    if (five === undefined) throw new Error('no 5h')
+    expect(holdLevel(cfg, five, 1000, 900)).toBe(95)
+    const usage = { ts: 0, windows: [{ key: 'seven_day' as const, pct: 94, resetsAt: 1_000_000 }] }
+    expect(violations(usage, cfg, 1_000_000 - 2 * 86400).map(v => v.label)).toEqual(['7d'])
+    expect(violations(usage, cfg, 1_000_000 - 12 * 3600)).toEqual([])
+    const [p] = paces(usage, cfg, 1_000_000 - 12 * 3600, terms('high', {}, cfg))
+    expect(p?.holdAt).toBe(95)
+    expect(p?.threshold).toBe(90)
   })
 })
 
@@ -178,9 +209,9 @@ describe('usage', () => {
 
   test('violations are windows at or over the threshold that have not reset', () => {
     const cfg: Config = parseConfig({ threshold_5h: 50 })
-    const usage = { ts: 0, windows: [{ key: 'five_hour' as const, pct: 50, resetsAt: 100 }, { key: 'seven_day' as const, pct: 95, resetsAt: 10 }] }
-    expect(violations(usage, cfg, 50).map(v => v.label)).toEqual(['5h'])
-    expect(violations(usage, cfg, 5).map(v => v.label)).toEqual(['5h', '7d'])
+    const usage = { ts: 0, windows: [{ key: 'five_hour' as const, pct: 50, resetsAt: 100 }, { key: 'seven_day' as const, pct: 95, resetsAt: 400_000 }] }
+    expect(violations(usage, cfg, 50).map(v => v.label)).toEqual(['5h', '7d'])
+    expect(violations(usage, cfg, 150).map(v => v.label)).toEqual(['7d'])
   })
 
   test('durations read as the statusline showed them', () => {

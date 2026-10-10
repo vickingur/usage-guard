@@ -384,9 +384,9 @@ def cmd_brief():
 def print_windows(windows):
     for w in windows:
         pct, line = w["used_pct"], w["pace_line_pct"]
-        threshold = w["threshold_pct"]
-        colour = "1;31" if pct >= threshold else ("33" if pct >= threshold * 0.66 else "32")
-        text = f"{w['window']:<10} {paint(f'{pct:.1f}%', colour)}  of {threshold:g}%  pace line {line:.0f}%"
+        threshold, hold_at = w["threshold_pct"], w["hold_at_pct"]
+        colour = "1;31" if pct >= hold_at else ("33" if pct >= hold_at * 0.66 else "32")
+        text = f"{w['window']:<10} {paint(f'{pct:.1f}%', colour)}  hold at {hold_at:g}%  pace line {line:.0f}%"
         ahead = w["ahead_pct"]
         if ahead >= 0.5:
             text += paint(f" +{ahead:.0f}", "33")

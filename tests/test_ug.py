@@ -86,7 +86,7 @@ class UgTest(unittest.TestCase):
         proc = self.ug("status")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("on", proc.stdout)
-        self.assertIn("95", proc.stdout)
+        self.assertIn("hold at 95", proc.stdout)
 
     def test_status_shows_current_usage_from_the_cache(self):
         self.write_cache(pct=42.0)

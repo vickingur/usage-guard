@@ -30,7 +30,8 @@ export const CASES = [
           "margin": 20.0,
           "active": true,
           "delaySeconds": 30.0,
-          "catchup_in": 2273
+          "catchup_in": 2273,
+          "holdAt": 95.0
         }
       ]
     }
@@ -64,7 +65,8 @@ export const CASES = [
           "margin": 10.0,
           "active": true,
           "delaySeconds": 60.0,
-          "catchup_in": 4168
+          "catchup_in": 4168,
+          "holdAt": 95.0
         }
       ]
     }
@@ -98,7 +100,8 @@ export const CASES = [
           "margin": 15.0,
           "active": true,
           "delaySeconds": 45.0,
-          "catchup_in": 3221
+          "catchup_in": 3221,
+          "holdAt": 95.0
         }
       ]
     }
@@ -130,7 +133,8 @@ export const CASES = [
           "margin": 20.0,
           "active": true,
           "delaySeconds": 30.0,
-          "catchup_in": 2273
+          "catchup_in": 2273,
+          "holdAt": 95.0
         }
       ]
     }
@@ -164,7 +168,8 @@ export const CASES = [
           "margin": 10.0,
           "active": true,
           "delaySeconds": 60.0,
-          "catchup_in": 4168
+          "catchup_in": 4168,
+          "holdAt": 95.0
         }
       ]
     }
@@ -198,7 +203,8 @@ export const CASES = [
           "margin": 0.0,
           "active": true,
           "delaySeconds": 120.0,
-          "catchup_in": 6063
+          "catchup_in": 6063,
+          "holdAt": 95.0
         }
       ]
     }
@@ -233,7 +239,8 @@ export const CASES = [
           "margin": 0.0,
           "active": false,
           "delaySeconds": 0.0,
-          "catchup_in": 0
+          "catchup_in": 0,
+          "holdAt": 95.0
         }
       ]
     }
@@ -267,7 +274,8 @@ export const CASES = [
           "margin": 15.0,
           "active": false,
           "delaySeconds": 0.0,
-          "catchup_in": 0
+          "catchup_in": 0,
+          "holdAt": 90.0
         }
       ]
     }
@@ -301,7 +309,8 @@ export const CASES = [
           "margin": 20.0,
           "active": false,
           "delaySeconds": 0.0,
-          "catchup_in": 0
+          "catchup_in": 0,
+          "holdAt": 95.0
         }
       ]
     }
@@ -338,7 +347,8 @@ export const CASES = [
           "margin": 10.0,
           "active": true,
           "delaySeconds": 60.0,
-          "catchup_in": 4168
+          "catchup_in": 4168,
+          "holdAt": 95.0
         }
       ]
     }
@@ -406,7 +416,8 @@ export const CASES = [
           "margin": 15.0,
           "active": false,
           "delaySeconds": 0.0,
-          "catchup_in": 0
+          "catchup_in": 0,
+          "holdAt": 90.0
         }
       ]
     }
@@ -474,7 +485,41 @@ export const CASES = [
           "margin": 15.0,
           "active": false,
           "delaySeconds": 0.0,
-          "catchup_in": 0
+          "catchup_in": 0,
+          "holdAt": 90.0
+        }
+      ]
+    }
+  },
+  {
+    "name": "half a day before the weekly reset the hold level has climbed halfway from 90 to 100",
+    "config": {},
+    "priority": "high",
+    "idle": {},
+    "now": 1000000,
+    "windows": [
+      {
+        "key": "seven_day",
+        "pct": 94.0,
+        "resets_in": 43200
+      }
+    ],
+    "expect": {
+      "terms": {
+        "marginFactor": 1,
+        "delayFactor": 1,
+        "lift": 0
+      },
+      "paces": [
+        {
+          "label": "7d",
+          "line": 83.571,
+          "ahead": 10.429,
+          "margin": 15.0,
+          "active": false,
+          "delaySeconds": 0.0,
+          "catchup_in": 0,
+          "holdAt": 95.0
         }
       ]
     }

@@ -4,6 +4,7 @@ export type UsageGuardWindow = {
   label: string
   pct: number
   threshold: number
+  holdAt: number
   ahead: number
   pacing: boolean
   delaySeconds: number

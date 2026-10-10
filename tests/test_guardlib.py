@@ -60,9 +60,20 @@ class GuardlibTest(unittest.TestCase):
         now = 1_000_000
         cache = {"ts": now,
                  "five_hour": {"used_percentage": 96.0, "resets_at": now + 60},
-                 "seven_day": {"used_percentage": 99.0, "resets_at": now + 600}}
+                 "seven_day": {"used_percentage": 99.0, "resets_at": now + 2 * 86400}}
         labels = sorted(v.label for v in self.g.violations(cache, self.g.load_config(), now))
         self.assertEqual(labels, ["5h", "7d"])
+
+    def test_the_weekly_hold_level_climbs_to_100_over_the_last_day(self):
+        cfg = self.g.load_config()
+        reset = 1_000_000
+        self.assertEqual(self.g.hold_level(cfg, "seven_day", reset, reset - 3 * 86400), 90.0)
+        self.assertEqual(self.g.hold_level(cfg, "seven_day", reset, reset - 12 * 3600), 95.0)
+        self.assertEqual(self.g.hold_level(cfg, "seven_day", reset, reset), 100.0)
+        self.assertEqual(self.g.hold_level(cfg, "five_hour", reset, reset - 60), 95.0)
+        cache = {"ts": 0, "seven_day": {"used_percentage": 99.0, "resets_at": reset}}
+        self.assertEqual(self.g.violations(cache, cfg, reset - 600), [])  # ten minutes before the reset, 99% is allowed
+        self.assertEqual([v.label for v in self.g.violations(cache, cfg, reset - 86400)], ["7d"])
 
     def test_cache_is_stale_past_the_configured_age(self):
         cfg = self.g.load_config()

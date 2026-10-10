@@ -202,14 +202,35 @@ describe('tool.call: the threshold hold', () => {
     expect(w.sleeps.length).toBeGreaterThan(1)
   })
 
-  test('past the stall budget the call is denied with the reset time', async ($, on) => {
+  test('the hold has no budget: it lasts until the reset, however far away', async ($, on) => {
     const w = world(on)
     config(w, { max_stall_seconds: 12 })
-    await start($, w, fiveHour(w, 96))
+    await start($, w, fiveHour(w, 96, 60))
     const ran = await callBash($)
-    expect(ran.deny).toContain('Usage guard: 5h at 96% (threshold 95%)')
-    expect(ran.deny).toContain('exceeds the configured stall budget')
-    expect(w.sleeps).toEqual([5, 5, 2])
+    expect(ran.deny).toBe(undefined)
+    expect(w.sleeps).toEqual([5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5])
+  })
+
+  test('the weekly hold level climbs to 100% over the last day', async ($, on) => {
+    const w = world(on)
+    config(w)
+    const week = (pct: number, resetsIn: number): SessionRateLimit[] => [
+      { kind: 'seven_day', percentUsed: pct, resetsAt: new Date((w.nowSeconds() + resetsIn) * 1000).toISOString() },
+    ]
+    await start($, w, week(94, 12 * H)) // half a day left: the level is 95, so 94 runs
+    let ran = await callBash($)
+    expect(ran.deny).toBe(undefined)
+    expect(w.sleeps).toEqual([])
+    const entered = await $.prompt.submit({ text: 'hi', wait: false, origin: { kind: 'composer' } })
+    expect(entered.context?.[0]).toContain('hold at 95%')
+    await w.clock.advance(60_000) // a minute on: the fresh reading beats the file written by the first call
+    w.limits = week(96, 12 * H - 60) // over the level: held until ug release
+    w.beforeSleep = count => {
+      if (count === 1) w.write('state.json', { release_at: w.nowSeconds() + 1 })
+    }
+    ran = await callBash($)
+    expect(ran.deny).toBe(undefined)
+    expect(w.sleeps.length).toBe(2)
   })
 
   test('`ug off` ends a hold', async ($, on) => {

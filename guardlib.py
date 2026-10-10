@@ -86,6 +86,7 @@ class Pace:
     delay_seconds: float   # per-tool-call delay in "delay" mode (0 when inactive)
     catchup_at: int    # when the line reaches pct - margin, i.e. when pacing would release
     line_rate: float = 0.0   # points per second the line climbs right now
+    hold_at: float = 0.0     # the level the hold engages at right now
 
 
 # --- paths -------------------------------------------------------------------
@@ -207,15 +208,29 @@ def _reading(cache, key):
         return None
 
 
+def hold_level(cfg, key: str, resets_at: float, now: float) -> float:
+    """The level the hold engages at right now. The weekly threshold keeps a
+    reserve all week and releases it over the last `threshold_7d_release_hours`,
+    climbing linearly to 100% at the reset. The pace line still aims at the base."""
+    base = float(cfg["threshold_7d" if key == "seven_day" else "threshold_5h"])
+    release = float(cfg["threshold_7d_release_hours"]) * 3600
+    if key != "seven_day" or release <= 0:
+        return base
+    remaining = max(0.0, resets_at - now)
+    if remaining >= release:
+        return base
+    return min(100.0, base + (100.0 - base) * (1.0 - remaining / release))
+
+
 def violations(cache, cfg, now: float) -> list:
-    """Windows at or over their threshold whose reset time is still in the future."""
+    """Windows at or over their hold level whose reset time is still in the future."""
     found = []
     for key, cfg_key, label, _margin_key, _length in WINDOWS:
         reading = _reading(cache, key)
         if reading is None:
             continue
         pct, resets_at = reading
-        threshold = float(cfg[cfg_key])
+        threshold = hold_level(cfg, key, resets_at, now)
         if pct >= threshold and resets_at > now:
             found.append(Violation(label, pct, resets_at, threshold))
     return found
@@ -359,7 +374,7 @@ def paces(cache, cfg, now: float, t: Terms = ACCOUNT_TERMS, profile: Profile = U
         delay = min(max_delay * t.delay_factor, over * per_pct * t.delay_factor) if active else 0.0
         catchup = line_reaches(threshold, resets_at, length, now, pct - margin, shape)
         out.append(Pace(key, label, pct, resets_at, threshold, line, ahead, margin, active, delay, catchup,
-                        line_rate_at(threshold, resets_at, length, now, shape)))
+                        line_rate_at(threshold, resets_at, length, now, shape), hold_level(cfg, key, resets_at, now)))
     return out
 
 
@@ -531,7 +546,7 @@ def _window_rows(cache, cfg, now: float, t: Terms = ACCOUNT_TERMS) -> list:
     rows = []
     for p in paces(cache, cfg, now, t, profile_of(cfg)):
         rows.append({
-            "window": p.label, "used_pct": round(p.pct, 1), "threshold_pct": p.threshold,
+            "window": p.label, "used_pct": round(p.pct, 1), "threshold_pct": p.threshold, "hold_at_pct": round(p.hold_at, 1),
             "resets_at": p.resets_at, "resets_in_seconds": max(0, p.resets_at - int(now)),
             "pace_line_pct": round(p.line, 1), "ahead_pct": round(p.ahead, 1),
             "margin_pct": round(p.margin, 1), "pacing": p.active,
