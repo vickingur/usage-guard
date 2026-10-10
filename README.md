@@ -48,21 +48,21 @@ Everything sits at the bottom right, where the prompt footer keeps its mode
 labels, on the terminal and in the desktop app:
 
 ```
-● 5h 31% +2 ↻3h32m·29%  7d 67% +8 ↻2d9h·66%  cx 44%  ⧖5h@45%~1h20m ⊘@95%~4h  ‹ ◇ normal ⇡△ ›
+● ⁵ʰ31%+2 ▎29% 3h32m ⁷ᵈ67%+8 ▋66% 2d9h cx 44%  ◔⁵ʰ@45%~1h20m ⊘@95%~4h  ‹ ◇ normal ⇡△ ›
 ```
 
 | Mark | Meaning |
 |---|---|
-| `●` `⧖` `⊘` `○` `~` `·` | the guard's state: fine, pacing, held, off, figures older than ten minutes, no data yet |
-| `5h 31% +2` | used, and how far ahead of the pace line; `+8▲` in amber while pacing |
-| `↻3h32m·29%` | time until the window resets, and how much of the window has elapsed |
+| `●` `◔` `⊘` `○` `~` `·` | the guard's state: fine, pacing, held, off, figures older than ten minutes, no data yet |
+| `⁵ʰ31%+2` | the 5h window: used, and how far ahead of the pace line; `+8▲` in amber while pacing |
+| `▎29% 3h32m` | how much of the window has elapsed, as an eighth-block bar and a figure, and the time until it resets |
 | `cx 3%/44%` | Codex's 5h and 7d windows (one figure when only one is known) |
-| `⧖5h@45%~1h20m` | pacing would start at 45% on the 5h window, in about 1h20m at the current burn rate |
+| `◔⁵ʰ@45%~1h20m` | pacing would start at 45% on the 5h window, in about 1h20m at the current burn rate |
 | `⊘@95%~4h` | the hold would start at 95%, in about 4h; the rate is read off the last hour of readings and left out until there is one |
-| `⧖20s ↺1h12m` | while pacing: the per-call delay and when the window is back on pace |
+| `◔20s ↺1h12m` | while pacing: the per-call delay and when the window is back on pace |
 | `⊘ 41m →14:00` | while held: how long until the hold lifts, and when |
 | `~22m` | the figures are from 22 minutes ago (the session has been idle) |
-| `▽ low`, `◇ normal`, `△ high` | the session's priority; `›` steps it up and `‹` down, wrapping (hotkeys `p` and `o` while the footer has focus) |
+| `▽ low`, `◇ normal`, `△ high` | the session's priority; `›` steps it up and `‹` down, wrapping |
 | `⇡60%△`, `⇡△` | what it borrows: 60% of the way to high's terms, or high's terms whole |
 
 The `[usage]` line the model reads says the same in words, with the reset

@@ -130,7 +130,7 @@ svg { width: 100%; height: auto; display: block; font: 11px var(--mono); }
   function renderPrio() {
     const r = runsOf(scenario).find(x => x.policy === selected)
     $('prioh').textContent = `What each priority got under “${selected}”`
-    let html = '<tr><th>priority</th><th>sessions</th><th>calls</th><th>nominal /h</th><th>got /h</th><th>wait mean</th><th>p95</th><th>paced ⧖</th><th>held ⊘</th><th>wall</th><th>borrowed ⇡</th></tr>'
+    let html = '<tr><th>priority</th><th>sessions</th><th>calls</th><th>nominal /h</th><th>got /h</th><th>wait mean</th><th>p95</th><th>paced ◔</th><th>held ⊘</th><th>wall</th><th>borrowed ⇡</th></tr>'
     for (const p of ['high', 'normal', 'low']) {
       const row = r.priorities[p]; if (!row) continue
       html += `<tr><td>${GLYPH[p]} ${p}</td><td>${row.sessions}</td><td>${row.calls}</td><td>${row.nominal_per_hour.toFixed(0)}</td><td>${row.got_per_hour.toFixed(0)}</td><td>${row.wait_mean_s.toFixed(0)}s</td><td>${row.wait_p95_s.toFixed(0)}s</td><td>${h(row.paced_h)}</td><td>${h(row.held_h)}</td><td>${h(row.wall_h)}</td><td>${row.lift_mean.toFixed(1)}</td></tr>`
@@ -174,7 +174,7 @@ svg { width: 100%; height: auto; display: block; font: 11px var(--mono); }
     svg.addEventListener('pointermove', move); svg.addEventListener('pointerleave', hide)
   }
   const STATE = { work: 'var(--s1)', think: 'var(--grid)', pace: 'var(--warn)', hold: 'var(--crit)', wall: 'var(--fg)' }
-  const STATE_LABEL = { work: 'working', think: 'thinking', pace: '⧖ paced', hold: '⊘ held', wall: 'at the wall' }
+  const STATE_LABEL = { work: 'working', think: 'thinking', pace: '◔ paced', hold: '⊘ held', wall: 'at the wall' }
   function renderTracks() {
     const r = runsOf(scenario).find(x => x.policy === selected)
     const sessions = [...r.sessions].sort((a, b) => ['high', 'normal', 'low'].indexOf(a.priority) - ['high', 'normal', 'low'].indexOf(b.priority) || a.born_h - b.born_h)
