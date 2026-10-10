@@ -1,0 +1,178 @@
+<title>Usage Guard Simulator</title>
+<meta name="description" content="How the usage guard's policies spend a week: window curves against the pace line, and what each priority gets.">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one left-aligned column, the run line as the hero, tabs for scenarios,
+   the policy table, two charts side by side when wide, the priority table.
+   Dark first: it belongs next to the terminal footer it visualizes. */
+:root {
+  --bg: #0e1217; --surface: #141a21; --fg: #dbe0e6; --muted: #8391a0; --grid: #243040; --rule: #2e3b4a;
+  --warn: #fab219; --crit: #d03b3b; --good: #0ca30c;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f6f4ef; --surface: #fffdf9; --fg: #1b2027; --muted: #5c6670; --grid: #e2ded6; --rule: #cfcac0;
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f6f4ef; --surface: #fffdf9; --fg: #1b2027; --muted: #5c6670; --grid: #e2ded6; --rule: #cfcac0;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+  color-scheme: light;
+}
+body { background: var(--bg); color: var(--fg); font: 15px/1.5 var(--sans); }
+.wrap { max-width: 1040px; margin: 0 auto; padding-block: 28px 48px; padding-inline: 16px; display: grid; gap: 22px; }
+h1 { font: 500 22px/1.2 var(--sans); margin: 0; text-wrap: balance; }
+h2 { font: 500 15px/1.3 var(--sans); margin: 0; color: var(--muted); }
+.run { font: 13px/1.6 var(--mono); color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 18px; }
+.run b { color: var(--fg); font-weight: 500; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.tab { font: 13px var(--mono); color: var(--muted); background: transparent; border: 1px solid var(--rule); border-radius: 3px; padding: 4px 10px; cursor: pointer; }
+.tab[aria-selected="true"] { color: var(--fg); border-color: var(--fg); }
+.tab:focus-visible, .policy:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th { font: 500 12px var(--sans); color: var(--muted); }
+td:first-child, th:first-child { text-align: left; }
+.tablewrap { overflow-x: auto; min-width: 0; }
+.policy { cursor: pointer; }
+.policy[aria-selected="true"] td { background: var(--surface); }
+.chip { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 7px; vertical-align: -1px; }
+.strip { font: 13px var(--mono); letter-spacing: 1px; color: var(--muted); }
+.strip.over { color: var(--crit); }
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
+figure { margin: 0; background: var(--surface); border: 1px solid var(--grid); border-radius: 4px; padding: 12px 12px 8px; min-width: 0; }
+figcaption { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+svg { width: 100%; height: auto; display: block; font: 11px var(--mono); }
+.grid line { stroke: var(--grid); }
+.axis text { fill: var(--muted); }
+.series path { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.series circle { stroke: var(--surface); stroke-width: 2; }
+.line-pace { stroke: var(--muted); stroke-dasharray: 4 4; fill: none; stroke-width: 1.5; }
+.line-thr { stroke: var(--crit); stroke-dasharray: 2 4; stroke-width: 1; }
+.cross { stroke: var(--fg); stroke-width: 1; opacity: .5; }
+.tip { position: absolute; pointer-events: none; background: var(--bg); border: 1px solid var(--rule); border-radius: 3px; padding: 6px 8px; font: 12px/1.5 var(--mono); color: var(--fg); white-space: nowrap; display: none; }
+.figbody { position: relative; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 12px var(--mono); color: var(--muted); margin-top: 6px; }
+.dim { opacity: .35; }
+.note { color: var(--muted); font-size: 13px; max-width: 65ch; }
+@media (prefers-reduced-motion: no-preference) { .series path { transition: opacity .15s; } }
+</style>
+<div class="wrap">
+  <h1>Usage guard simulator</h1>
+  <div class="run" id="run"></div>
+  <div class="tabs" id="tabs" role="tablist"></div>
+  <section>
+    <h2>Policies on the same seed</h2>
+    <div class="tablewrap"><table id="policies"></table></div>
+  </section>
+  <div class="charts">
+    <figure><figcaption><span>7d window, % used</span><span id="cap7"></span></figcaption><div class="figbody" id="chart7"></div></figure>
+    <figure><figcaption><span>5h window, % used</span><span id="cap5"></span></figcaption><div class="figbody" id="chart5"></div></figure>
+  </div>
+  <section>
+    <h2 id="prioh">What each priority got</h2>
+    <div class="tablewrap"><table id="prio"></table></div>
+  </section>
+  <p class="note">Each session is a Markov chain over think, work and done; calls cost a share of both windows, which reset as Claude's do; at 100% the API refuses and a session waits for the reset whatever the policy. Decisions go through the guard's own math. Dashed grey is the pace line, dotted red the threshold.</p>
+</div>
+<script id="data" type="application/json">__DATA__</script>
+<script>
+(() => {
+  const RUNS = JSON.parse(document.getElementById('data').textContent)
+  const POLICIES = ['none', 'threshold', 'pace', 'priority']
+  const COLOR = { none: 'var(--s1)', threshold: 'var(--s2)', pace: 'var(--s3)', priority: 'var(--s4)' }
+  const GLYPH = { low: '▽', normal: '◇', high: '△' }
+  const BARS = '▁▂▃▄▅▆▇█'
+  const scenarios = [...new Set(RUNS.map(r => r.scenario))]
+  let scenario = scenarios[0], selected = 'priority'
+  const $ = id => document.getElementById(id)
+  const runsOf = s => POLICIES.map(p => RUNS.find(r => r.scenario === s && r.policy === p)).filter(Boolean)
+  const h = n => `${n.toFixed(1)}h`
+  const strip = (vals, width = 28) => {
+    const per = Math.max(1, Math.ceil(vals.length / width)); let out = ''
+    for (let i = 0; i < vals.length; i += per) { const v = Math.max(...vals.slice(i, i + per)); out += v >= 100 ? '█' : BARS[Math.min(7, Math.floor(8 * Math.max(0, v) / 100))] }
+    return out
+  }
+  function renderRun() {
+    const r = runsOf(scenario)[0]
+    const over = Object.entries(r.config || {}).map(([k, v]) => `${k}=${v}`).join(' ')
+    $('run').innerHTML = `<span>scenario <b>${r.scenario}</b></span><span><b>${r.days}</b> days</span><span>step <b>${r.dt}s</b></span><span>seed <b>${r.seed}</b></span>${over ? `<span>overrides <b>${over}</b></span>` : ''}`
+  }
+  function renderTabs() {
+    $('tabs').innerHTML = scenarios.map(s => `<button class="tab" role="tab" id="tab-${s}" aria-selected="${s === scenario}">${s}</button>`).join('')
+    scenarios.forEach(s => $(`tab-${s}`).onclick = () => { scenario = s; renderAll() })
+  }
+  function renderPolicies() {
+    const runs = runsOf(scenario)
+    const prios = ['high', 'normal', 'low'].filter(p => runs[0].priorities[p])
+    let html = `<tr><th>policy</th><th>7d end</th><th>5h peak</th><th>held ⊘</th><th>at the wall</th>${prios.map(p => `<th>${GLYPH[p]} got/h</th><th>${GLYPH[p]} p95 wait</th>`).join('')}<th>7d over the run</th></tr>`
+    for (const r of runs) {
+      const w = r.windows, seven = r.timeline.map(t => t.seven_day_pct)
+      html += `<tr class="policy" tabindex="0" id="pol-${r.policy}" aria-selected="${r.policy === selected}"><td><span class="chip" style="background:${COLOR[r.policy]}"></span>${r.policy}</td><td>${w.seven_day.end_pct.toFixed(0)}%</td><td>${w.five_hour.peak_pct.toFixed(0)}%</td><td>${h(w.held_h)}</td><td>${h(w.wall_h)}</td>${prios.map(p => `<td>${r.priorities[p].got_per_hour.toFixed(0)}</td><td>${r.priorities[p].wait_p95_s.toFixed(0)}s</td>`).join('')}<td class="strip${w.five_hour.peak_pct >= 100 || w.seven_day.peak_pct >= 100 ? ' over' : ''}">${strip(seven, 14)}</td></tr>`
+    }
+    $('policies').innerHTML = html
+    for (const r of runs) { const row = $(`pol-${r.policy}`); const pick = () => { selected = r.policy; renderAll() }; row.onclick = pick; row.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick() } } }
+  }
+  function renderPrio() {
+    const r = runsOf(scenario).find(x => x.policy === selected)
+    $('prioh').textContent = `What each priority got under “${selected}”`
+    let html = '<tr><th>priority</th><th>sessions</th><th>calls</th><th>nominal /h</th><th>got /h</th><th>wait mean</th><th>p95</th><th>paced ⧖</th><th>held ⊘</th><th>wall</th><th>borrowed ⇡</th></tr>'
+    for (const p of ['high', 'normal', 'low']) {
+      const row = r.priorities[p]; if (!row) continue
+      html += `<tr><td>${GLYPH[p]} ${p}</td><td>${row.sessions}</td><td>${row.calls}</td><td>${row.nominal_per_hour.toFixed(0)}</td><td>${row.got_per_hour.toFixed(0)}</td><td>${row.wait_mean_s.toFixed(0)}s</td><td>${row.wait_p95_s.toFixed(0)}s</td><td>${h(row.paced_h)}</td><td>${h(row.held_h)}</td><td>${h(row.wall_h)}</td><td>${row.lift_mean.toFixed(1)}</td></tr>`
+    }
+    $('prio').innerHTML = html
+  }
+  function chart(id, key, threshold, withPace) {
+    const runs = runsOf(scenario), W = 640, H = 240, L = 34, R = 14, T = 10, B = 26
+    const days = runs[0].days, X = t => L + (W - L - R) * t / (days * 24), Y = v => T + (H - T - B) * (1 - Math.min(v, 100) / 100)
+    const path = pts => pts.map((p, i) => `${i ? 'L' : 'M'}${X(p.t_h).toFixed(1)},${Y(p.v).toFixed(1)}`).join('')
+    let g = `<g class="grid">${[0, 25, 50, 75, 100].map(v => `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/>`).join('')}</g>`
+    g += `<g class="axis">${[0, 25, 50, 75, 100].map(v => `<text x="${L - 6}" y="${Y(v) + 4}" text-anchor="end">${v}</text>`).join('')}`
+    for (let d = 0; d <= days; d++) g += `<text x="${X(d * 24)}" y="${H - 8}" text-anchor="middle">${d}d</text>`
+    g += '</g>'
+    g += `<line class="line-thr" x1="${L}" x2="${W - R}" y1="${Y(threshold)}" y2="${Y(threshold)}"/>`
+    if (withPace) {
+      const pace = runs[0].timeline.filter(p => p.seven_day_line_pct != null).map(p => ({ t_h: p.t_h, v: p.seven_day_line_pct }))
+      if (pace.length) g += `<path class="line-pace" d="${path(pace)}"/>`
+    }
+    g += '<g class="series">'
+    for (const r of runs) {
+      const pts = r.timeline.map(p => ({ t_h: p.t_h, v: p[key] })), last = pts[pts.length - 1]
+      const dim = r.policy !== selected ? ' dim' : ''
+      g += `<path class="${dim}" d="${path(pts)}" stroke="${COLOR[r.policy]}"/><circle class="${dim}" cx="${X(last.t_h)}" cy="${Y(last.v)}" r="3.5" fill="${COLOR[r.policy]}"/>`
+    }
+    g += `</g><line class="cross" id="${id}-x" x1="0" x2="0" y1="${T}" y2="${H - B}" style="display:none"/>`
+    const body = $(id)
+    body.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${key} by policy over ${days} days">${g}</svg><div class="tip" id="${id}-tip"></div><div class="legend">${runs.map(r => `<span><span class="chip" style="background:${COLOR[r.policy]}"></span>${r.policy}</span>`).join('')}</div>`
+    const svg = body.querySelector('svg'), tip = $(`${id}-tip`), cross = $(`${id}-x`)
+    const move = ev => {
+      const rect = svg.getBoundingClientRect(), x = (ev.clientX - rect.left) * W / rect.width
+      if (x < L || x > W - R) return hide()
+      const hours = (x - L) / (W - L - R) * days * 24
+      const idx = Math.round(hours), rows = runs.map(r => { const p = r.timeline[Math.min(idx, r.timeline.length - 1)]; return `<span class="chip" style="background:${COLOR[r.policy]}"></span>${r.policy.padEnd(9)} ${p[key].toFixed(0).padStart(3)}%` })
+      cross.setAttribute('x1', X(idx)); cross.setAttribute('x2', X(idx)); cross.style.display = ''
+      tip.innerHTML = `${(idx / 24).toFixed(1)}d<br>${rows.join('<br>')}`; tip.style.display = 'block'
+      const px = (ev.clientX - rect.left), flip = px > rect.width * 0.6
+      tip.style.left = flip ? `${px - tip.offsetWidth - 12}px` : `${px + 12}px`; tip.style.top = '8px'
+    }
+    const hide = () => { tip.style.display = 'none'; cross.style.display = 'none' }
+    svg.addEventListener('pointermove', move); svg.addEventListener('pointerleave', hide)
+  }
+  function renderAll() {
+    renderRun(); renderTabs(); renderPolicies(); renderPrio()
+    const r = runsOf(scenario)[0]
+    chart('chart7', 'seven_day_pct', r.windows.seven_day.threshold_pct, true)
+    chart('chart5', 'five_hour_pct', 95, false)
+    $('cap7').textContent = `threshold ${r.windows.seven_day.threshold_pct}%, pace line dashed`
+    $('cap5').textContent = 'resets 5h after the first call'
+  }
+  renderAll()
+})()
+</script>

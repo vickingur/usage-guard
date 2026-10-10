@@ -1,4 +1,4 @@
-import json, subprocess, sys, unittest
+import json, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -74,6 +74,23 @@ class SimulatorTest(unittest.TestCase):
         self.assertEqual(sim.strip([0, 50, 100]), "▁▅█")
         self.assertEqual(sim.strip([]), "")
         self.assertEqual(len(sim.strip(list(range(100)), width=10)), 10)
+
+    def test_html_writes_a_self_contained_page_of_every_scenario(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "sim.html"
+            proc = subprocess.run([sys.executable, str(UG), "sim", "--scenario", "all", "--days", "0.5", "--dt", "60", "--html", str(out)],
+                                  capture_output=True, text=True, timeout=120)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            page = out.read_text()
+            self.assertIn("<title>Usage Guard Simulator</title>", page)
+            data = json.loads(page.split('<script id="data" type="application/json">', 1)[1].split("</script>", 1)[0])
+            self.assertEqual(len(data), len(sim.SCENARIOS) * len(sim.POLICIES))
+            self.assertNotIn("__DATA__", page)
+            self.assertNotIn("https://", page.split("<script>", 1)[1])  # the page's own script loads nothing
+
+    def test_scenario_all_needs_a_page_or_json(self):
+        proc = subprocess.run([sys.executable, str(UG), "sim", "--scenario", "all"], capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 2)
 
     def test_ug_sim_runs_the_cli_and_rejects_a_bad_override(self):
         proc = subprocess.run([sys.executable, str(UG), "sim", "--scenario", "solo", "--days", "0.5", "--dt", "30", "--json"],

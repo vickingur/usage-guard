@@ -391,7 +391,7 @@ def render_compare(reps: list) -> str:
 
 def main(argv) -> int:
     ap = argparse.ArgumentParser(prog="ug sim", description=__doc__.split("\n\n")[0])
-    ap.add_argument("--scenario", choices=sorted(SCENARIOS), default="mixed")
+    ap.add_argument("--scenario", choices=sorted(SCENARIOS) + ["all"], default="mixed")
     ap.add_argument("--policy", choices=POLICIES, default="priority")
     ap.add_argument("--compare", action="store_true", help="run every policy on the same seed")
     ap.add_argument("--days", type=float, default=7.0)
@@ -400,8 +400,10 @@ def main(argv) -> int:
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                     help="override a guard setting for the run, e.g. pace_max_delay_seconds=120 or pace_mode=hold")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--html", metavar="FILE", help="write a self-contained page of the runs (implies --compare)")
     args = ap.parse_args(argv)
-    sc = SCENARIOS[args.scenario]
+    if args.html:
+        args.compare = True
     overrides = {}
     for item in args.set:
         key, _, raw = item.partition("=")
@@ -411,7 +413,16 @@ def main(argv) -> int:
         overrides[key] = raw if isinstance(default, str) else raw.lower() in ("1", "true", "on") if isinstance(default, bool) else float(raw)
     cfg = g.parse_config(overrides)
     policies = POLICIES if args.compare else (args.policy,)
-    reps = [Simulation(sc, policy, args.days, args.dt, args.seed, cfg).run() for policy in policies]
+    names = sorted(SCENARIOS) if args.scenario == "all" else [args.scenario]
+    if args.scenario == "all" and not args.html and not args.json:
+        ap.error("--scenario all needs --html or --json")
+    reps = [Simulation(SCENARIOS[name], policy, args.days, args.dt, args.seed, cfg).run()
+            for name in names for policy in policies]
+    if args.html:
+        page = (Path(__file__).resolve().parent / "sim-page.html").read_text()
+        Path(args.html).write_text(page.replace("__DATA__", json.dumps(reps).replace("</", "<\\/")))
+        print(f"wrote {args.html}: {len(reps)} runs")
+        return 0
     if args.json:
         print(json.dumps(reps if args.compare else reps[0], indent=2))
     elif args.compare:
