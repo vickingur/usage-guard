@@ -466,7 +466,7 @@ const briefLine = (view: UsageGuardView, priority: Priority): string => {
   return line
 }
 
-const paceContext = (entered: readonly Pace[], t: Terms, cfg: Config, waited: number, now: number): string | undefined => {
+const paceContext = (entered: readonly Pace[], priority: Priority, t: Terms, cfg: Config, waited: number, now: number): string | undefined => {
   const active = entered.filter(p => p.active)
   if (active.length === 0) return undefined
   const parts = active.map(
@@ -477,9 +477,8 @@ const paceContext = (entered: readonly Pace[], t: Terms, cfg: Config, waited: nu
     cfg.pace_mode === 'delay'
       ? `each tool call is being delayed ${Math.round(paceDelay(active))}s`
       : `this call was held ${fmtDuration(waited)}`
-  const s = session()
   return (
-    `Usage guard pacing: ${parts.join('; ')}. This session runs at ${liftText(s.priority, t.lift)} priority, so ${how}; ` +
+    `Usage guard pacing: ${parts.join('; ')}. This session runs at ${liftText(priority, t.lift)} priority, so ${how}; ` +
     `back on pace in about ${fmtDuration(worst.catchupAt - now)} at the current rate. ${ADVICE}`
   )
 }
@@ -504,6 +503,7 @@ const guard = async ($: EngineInterface, toolUseId: string, signal: AbortSignal)
   s.lastCall = now
   s.lastMeasureAt = now // a tool call follows a model response: the engine's figures are this fresh
   const t = await sessionTerms($, p, cfg, now)
+  const priority = s.priority // as decided; a press during the wait must not relabel it
   await touch($, p, now, false)
   if (!cfg.enabled) {
     await publish($, p, cfg, undefined, now, ACCOUNT_TERMS)
@@ -573,7 +573,7 @@ const guard = async ($: EngineInterface, toolUseId: string, signal: AbortSignal)
       if (!cfg.enabled || !cfg.pace_enabled || (await releasedSince($, p, start))) break
     }
     s.pacingSeconds = 0
-    return { context: paceContext(entered, t, cfg, now - start, now) }
+    return { context: paceContext(entered, priority, t, cfg, now - start, now) }
   }
 
   const deadline = start + cfg.max_stall_seconds
@@ -598,7 +598,7 @@ const guard = async ($: EngineInterface, toolUseId: string, signal: AbortSignal)
   }
   await clearHold()
   await publish($, p, cfg, usage, now, t)
-  return { context: paceContext(entered, t, cfg, now - start, now) }
+  return { context: paceContext(entered, priority, t, cfg, now - start, now) }
 }
 
 // --- priority ---
