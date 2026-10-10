@@ -281,11 +281,30 @@ def strip_legacy_settings(path: Path) -> list:
     return removed
 
 
+def marketplace_elsewhere(listing: str, here: Path) -> bool:
+    """True when `claude plugin marketplace list` names a usage-guard marketplace whose folder is not `here`."""
+    lines = listing.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip().endswith("usage-guard") and i + 1 < len(lines):
+            source = lines[i + 1].strip()
+            if source.startswith("Source:") and "Folder" in source:
+                path = source.split("(", 1)[1].rstrip(")") if "(" in source else ""
+                return Path(path).resolve() != here.resolve()
+    return False
+
+
 def cmd_install():
     claude = shutil.which("claude")
     if not claude:
         return fail("`claude` is not on PATH; install Claude Code first")
-    steps = (["plugin", "marketplace", "add", str(HERE)], ["plugin", "install", "usage-guard@usage-guard"])
+    steps = []
+    # A marketplace of this name registered from another checkout would keep the
+    # plugin reading from there; re-point it at this one.
+    listed = subprocess.run([claude, "plugin", "marketplace", "list"], capture_output=True, text=True, timeout=60).stdout
+    elsewhere = marketplace_elsewhere(listed, HERE)
+    if elsewhere:
+        steps.append(["plugin", "marketplace", "remove", "usage-guard"])
+    steps += [["plugin", "marketplace", "add", str(HERE)], ["plugin", "install", "usage-guard@usage-guard"]]
     for args in steps:
         proc = subprocess.run([claude, *args], capture_output=True, text=True, timeout=120)
         if proc.returncode != 0 and "already" not in (proc.stdout + proc.stderr).lower():
