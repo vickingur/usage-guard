@@ -6,7 +6,9 @@ import {
   type Priority,
   type SessionEntry,
   WINDOWS,
+  fmtClock,
   fmtDuration,
+  fmtWhen,
   holdLevel,
   idleAbove,
   mergeUsage,
@@ -219,5 +221,14 @@ describe('usage', () => {
     expect(fmtDuration(600)).toBe('10m')
     expect(fmtDuration(3600 * 5 + 120)).toBe('5h02m')
     expect(fmtDuration(86400 * 2 + 3600 * 3)).toBe('2d3h')
+  })
+})
+
+describe('fmtWhen', () => {
+  test('a clock within 20 hours, a weekday and clock beyond', () => {
+    const now = new Date(2026, 9, 10, 15, 0).getTime() / 1000 // Saturday 15:00 local
+    expect(fmtWhen(now + 3600, now)).toBe('16:00')
+    expect(fmtWhen(now + 19 * 3600, now)).toBe(fmtClock(now + 19 * 3600))
+    expect(fmtWhen(new Date(2026, 9, 12, 21, 0).getTime() / 1000, now)).toBe('Mon 21:00')
   })
 })
