@@ -204,6 +204,34 @@ type Live = {
   pacingSeconds: number
   lift: number
   registry: { at: number; entries: SessionEntry[] } | undefined
+  history: Record<string, { ts: number; pct: number }[]>
+}
+
+const HISTORY_SECONDS = 3600
+const RATE_MIN_SPAN_SECONDS = 300
+
+/** Remembers a reading per window; the burn rate is read off the last hour. */
+const remember = (usage: Usage | undefined): void => {
+  if (usage === undefined || live === undefined) return
+  for (const r of usage.windows) {
+    const list = live.history[r.key] ?? []
+    const last = list[list.length - 1]
+    if (last !== undefined && last.pct === r.pct && last.ts >= usage.ts) continue
+    if (last !== undefined && r.pct < last.pct) list.length = 0 // the window reset
+    list.push({ ts: usage.ts, pct: r.pct })
+    while (list.length > 0 && usage.ts - (list[0]?.ts ?? usage.ts) > HISTORY_SECONDS) list.shift()
+    live.history[r.key] = list
+  }
+}
+
+/** Points per second over the last hour, or undefined without enough span. */
+const burnRate = (key: string): number | undefined => {
+  const list = live?.history[key] ?? []
+  const first = list[0]
+  const last = list[list.length - 1]
+  if (first === undefined || last === undefined || last.ts - first.ts < RATE_MIN_SPAN_SECONDS) return undefined
+  const rate = (last.pct - first.pct) / (last.ts - first.ts)
+  return rate > 0 ? rate : undefined
 }
 
 type Verdict = { deny?: string; context?: string }
@@ -266,16 +294,39 @@ const sessionTerms = async ($: EngineInterface, p: Paths, cfg: Config, now: numb
 
 // --- what the band, the status line and the brief show ---------------------
 
-const windowsView = (list: readonly Pace[], now: number, stale: boolean): UsageGuardWindow[] =>
-  list.map(p => ({
-    label: p.label,
-    pct: p.pct,
-    threshold: p.threshold,
-    ahead: p.ahead,
-    pacing: p.active && !stale,
-    delaySeconds: stale ? 0 : p.delaySeconds,
-    resetsIn: Math.max(0, p.resetsAt - now),
-  }))
+const windowsView = (list: readonly Pace[], cfg: Config, now: number, stale: boolean): UsageGuardWindow[] =>
+  list.map(p => {
+    const w = WINDOWS.find(one => one.key === p.key)
+    const length = w?.seconds ?? 1
+    const resetsIn = Math.max(0, p.resetsAt - now)
+    // Pacing engages once usage exceeds line + margin (and pace_min_used_pct);
+    // the line climbs threshold/length per second, usage at the burn rate.
+    const paceAt = Math.min(p.threshold, Math.max(cfg.pace_min_used_pct, p.line + p.margin))
+    const rate = burnRate(p.key)
+    const lineRate = p.threshold / length
+    let etaPace: number | undefined
+    let etaHold: number | undefined
+    if (rate !== undefined) {
+      etaHold = p.pct >= p.threshold ? 0 : (p.threshold - p.pct) / rate
+      if (p.active) etaPace = 0
+      else if (rate > lineRate) etaPace = Math.max((paceAt - p.pct) / (rate - lineRate), (cfg.pace_min_used_pct - p.pct) / rate, 0)
+      if (etaPace !== undefined && etaPace > resetsIn) etaPace = undefined
+      if (etaHold !== undefined && etaHold > resetsIn) etaHold = undefined
+    }
+    return {
+      label: p.label,
+      pct: p.pct,
+      threshold: p.threshold,
+      ahead: p.ahead,
+      pacing: p.active && !stale,
+      delaySeconds: stale ? 0 : p.delaySeconds,
+      resetsIn,
+      elapsedPct: Math.round(100 * (1 - Math.min(resetsIn, length) / length)),
+      paceAt,
+      ...(etaPace === undefined ? {} : { etaPaceSeconds: Math.round(etaPace) }),
+      ...(etaHold === undefined ? {} : { etaHoldSeconds: Math.round(etaHold) }),
+    }
+  })
 
 const publish = async (
   $: EngineInterface,
@@ -286,6 +337,7 @@ const publish = async (
   t: Terms,
 ): Promise<readonly Pace[]> => {
   const s = session()
+  remember(usage)
   const stale = isStale(usage, cfg, now)
   // Old figures are still the last known ones: shown with their age, never
   // acted on (the guard fails open on them; see guard()).
@@ -294,7 +346,7 @@ const publish = async (
   const active = list.filter(one => one.active)
   const worst = active.reduce<Pace | undefined>((a, b) => (a === undefined || b.ahead - b.margin > a.ahead - a.margin ? b : a), undefined)
   const view: UsageGuardView = {
-    windows: windowsView(list, now, stale),
+    windows: windowsView(list, cfg, now, stale),
     codex: (codex === undefined || now - codex.ts > cfg.codex_log_max_age_seconds ? [] : codex.windows)
       .filter(r => r.resetsAt > now)
       .map(r => ({ label: WINDOWS.find(w => w.key === r.key)?.label ?? r.key, pct: r.pct })),
@@ -341,8 +393,37 @@ const liftText = (priority: Priority, lift: number): string => {
 const windowPhrase = (w: UsageGuardWindow): string => {
   let text = `${w.label} ${Math.round(w.pct)}%`
   if (w.ahead >= 0.5) text += ` (+${Math.round(w.ahead)} over pace line)`
+  text += `, resets in ${fmtDuration(w.resetsIn)} (${w.elapsedPct}% elapsed)`
   if (w.pacing) text += ` PACING ${Math.round(w.delaySeconds)}s/call`
   return text
+}
+
+/** The window that would pace this session first: least headroom to its pace-at level. */
+const nearest = (view: UsageGuardView): UsageGuardWindow | undefined =>
+  view.windows.reduce<UsageGuardWindow | undefined>((a, b) => (a === undefined || b.paceAt - b.pct < a.paceAt - a.pct ? b : a), undefined)
+
+const blockPhrase = (view: UsageGuardView): string => {
+  if (view.hold !== null) return `${view.hold.kind === 'pace' ? 'pace hold' : 'HOLD'} on ${view.hold.label} until ${fmtClock(view.hold.until)}`
+  const w = nearest(view)
+  if (w === undefined) return ''
+  if (view.pacing !== null && view.pacing.delaySeconds > 0) {
+    return `pacing ${Math.round(view.pacing.delaySeconds)}s/call, back on pace in ${fmtDuration(view.pacing.backIn)}; hold at ${Math.round(w.threshold)}%` +
+      (w.etaHoldSeconds === undefined ? '' : ` (about ${fmtDuration(w.etaHoldSeconds)} at the current rate)`)
+  }
+  return `pacing starts at ${Math.round(w.paceAt)}% on ${w.label}` +
+    (w.etaPaceSeconds === undefined ? '' : ` (about ${fmtDuration(w.etaPaceSeconds)} at the current rate)`) +
+    `, hold at ${Math.round(w.threshold)}%` + (w.etaHoldSeconds === undefined ? '' : ` (about ${fmtDuration(w.etaHoldSeconds)})`)
+}
+
+/** One leading mark for the guard's state: ● fine, ⧖ pacing, ⊘ held, ○ off, ~ old figures, · no data. */
+const stateGlyph = (view: UsageGuardView | null): { glyph: string; color: 'success' | 'warning' | 'error' | 'subtle'; bold: boolean } => {
+  if (view === null || view.windows.length === 0) return { glyph: '·', color: 'subtle', bold: false }
+  if (!view.enabled) return { glyph: '○', color: 'warning', bold: false }
+  if (view.hold !== null) return { glyph: '⊘', color: view.hold.kind === 'pace' ? 'warning' : 'error', bold: true }
+  if (view.pacing !== null && view.pacing.delaySeconds > 0) return { glyph: '⧖', color: 'warning', bold: true }
+  if (view.stale) return { glyph: '~', color: 'subtle', bold: false }
+  if (!view.paceEnabled) return { glyph: '○', color: 'warning', bold: false }
+  return { glyph: '●', color: 'success', bold: false }
 }
 
 const briefLine = (view: UsageGuardView, priority: Priority): string => {
@@ -351,7 +432,8 @@ const briefLine = (view: UsageGuardView, priority: Priority): string => {
     parts.push(`claude ${view.windows.map(windowPhrase).join(', ')}${view.stale ? ` (as of ${fmtDuration(view.ageSeconds)} ago)` : ''}`)
   }
   if (view.codex.length > 0) parts.push(`codex ${view.codex.map(w => `${w.label} ${Math.round(w.pct)}%`).join(', ')}`)
-  if (view.hold !== null) parts.push(`HOLD on ${view.hold.label} until ${fmtClock(view.hold.until)}`)
+  const block = blockPhrase(view)
+  if (block !== '') parts.push(block)
   if (parts.length === 0) return ''
   parts.push(`priority ${liftText(priority, view.lift)}`)
   let line = `[usage] ${parts.join(' · ')}`
@@ -546,11 +628,16 @@ export const register: Register = (on, options) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const hold = view?.hold ?? null
     const pacing = view?.pacing ?? null
+    const nowSeconds = (await $.clock.now()) / 1000
+    const state = stateGlyph(view)
+    const near = view === null ? undefined : nearest(view)
+    const isPacing = pacing !== null && pacing.delaySeconds > 0
     return (
       <Box flexDirection="row" gap={1}>
         {e.props.modes.length > 0 && <Text dimColor>{e.props.modes.join(' & ')}</Text>}
+        <Text color={state.color} bold={state.bold}>{state.glyph}</Text>
         {view === null || view.windows.length === 0 ? (
-          <Text dimColor>○ no data</Text>
+          <Text dimColor>no data</Text>
         ) : (
           view.windows.map(w => (
             <Box gap={0}>
@@ -564,6 +651,9 @@ export const register: Register = (on, options) => {
                   {w.pacing ? '▲' : ''}
                 </Text>
               )}
+              <Text dimColor>
+                {' '}↻{fmtDuration(w.resetsIn)}·{w.elapsedPct}%
+              </Text>
             </Box>
           ))
         )}
@@ -573,16 +663,24 @@ export const register: Register = (on, options) => {
         )}
         {hold !== null && (
           <Text color={hold.kind === 'pace' ? 'warning' : 'error'} bold>
-            {hold.kind === 'pace' ? '⧖' : '⊘'} {hold.label} →{fmtClock(hold.until)}
+            {hold.kind === 'pace' ? '⧖' : '⊘'} {fmtDuration(hold.until - nowSeconds)} →{fmtClock(hold.until)}
           </Text>
         )}
-        {hold === null && pacing !== null && pacing.delaySeconds > 0 && (
+        {hold === null && isPacing && pacing !== null && (
           <Text color="warning" bold>
-            ⧖ {Math.round(pacing.delaySeconds)}s ↺{fmtDuration(pacing.backIn)}
+            ⧖{Math.round(pacing.delaySeconds)}s ↺{fmtDuration(pacing.backIn)}
           </Text>
         )}
-        {view !== null && !view.enabled && <Text color="warning">○ off</Text>}
-        {view !== null && view.enabled && !view.paceEnabled && <Text color="warning">⧖ off</Text>}
+        {hold === null && near !== undefined && !isPacing && (
+          <Text dimColor>
+            ⧖{near.label}@{Math.round(near.paceAt)}%{near.etaPaceSeconds === undefined ? '' : `~${fmtDuration(near.etaPaceSeconds)}`}
+          </Text>
+        )}
+        {hold === null && near !== undefined && (
+          <Text dimColor>
+            ⊘@{Math.round(near.threshold)}%{near.etaHoldSeconds === undefined ? '' : `~${fmtDuration(near.etaHoldSeconds)}`}
+          </Text>
+        )}
         <Box gap={0}>
           <Button key="priority-down" plain hotkey="o" label="‹" onPress={() => void stepPriority($, -1)} />
           <Text> {liftGlyph(priority, view?.lift ?? 0)} </Text>
@@ -662,6 +760,7 @@ export const register: Register = (on, options) => {
       pacingSeconds: 0,
       lift: 0,
       registry: undefined,
+      history: {},
     }
     lastViewJson = ''
     await update($, priorityAtom, () => priority)

@@ -270,6 +270,8 @@ describe('priority: command and band', () => {
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'usage-guard', surface, component: 'SessionMode', props: { modes: ['focus'] } })
       expect(await ui.find({ type: 'Text', text: /70%/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /↻3h00m·40%/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /⊘@95%/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /focus/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /◇ normal ⇡△/ })).toBeDefined()
       await ui.press({ key: 'priority-up' })
@@ -290,7 +292,8 @@ describe('prompt.submit and session.measure', () => {
     config(w)
     await start($, w, fiveHour(w, 70))
     const entered = await $.prompt.submit({ text: 'hi', wait: false, origin: { kind: 'composer' } })
-    expect(entered.context?.[0]).toContain('[usage] claude 5h 70% (+32 over pace line) PACING 30s/call · priority high')
+    expect(entered.context?.[0]).toContain('[usage] claude 5h 70% (+32 over pace line), resets in 3h00m (40% elapsed) PACING 30s/call')
+    expect(entered.context?.[0]).toContain('pacing 30s/call, back on pace in')
     expect(entered.context?.[0]).toContain('Spend is running ahead')
   })
 
@@ -300,11 +303,29 @@ describe('prompt.submit and session.measure', () => {
     await start($, w, fiveHour(w, 70))
     await w.clock.advance(20 * 60 * 1000)
     const entered = await $.prompt.submit({ text: 'hi', wait: false, origin: { kind: 'composer' } })
-    expect(entered.context?.[0]).toContain('[usage] claude 5h 70% (+26 over pace line) (as of 20m ago)')
+    expect(entered.context?.[0]).toContain('[usage] claude 5h 70% (+26 over pace line), resets in 2h40m (47% elapsed) (as of 20m ago)')
     expect(entered.context?.[0]).not.toContain('PACING')
     const ui = await $.ui.mount({ plugin: 'usage-guard', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
     expect(await ui.find({ type: 'Text', text: /~20m/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /stale/ })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('a burn rate over the last hour gives an ETA to pacing and to the hold', async ($, on) => {
+    const w = world(on, { priorityEnv: 'high' })
+    config(w)
+    await start($, w, fiveHour(w, 10, 4.5 * H))
+    // 12 points in 30 minutes, faster than the line climbs (95 points over 5h), so
+    // usage meets line + margin (39%) in about 3h24m and the threshold in about 3h02m.
+    await w.clock.advance(30 * 60 * 1000)
+    await $.session.measure({ context: { window: 1 }, rateLimits: fiveHour(w, 22, 4 * H), changed: ['rateLimits'] })
+    const entered = await $.prompt.submit({ text: 'hi', wait: false, origin: { kind: 'composer' } })
+    expect(entered.context?.[0]).toContain('pacing starts at 39% on 5h (about 3h2')
+    expect(entered.context?.[0]).toContain('at the current rate), hold at 95% (about 3h0')
+    const ui = await $.ui.mount({ plugin: 'usage-guard', surface: 'desktop', component: 'SessionMode', props: { modes: [] } })
+    expect(await ui.find({ type: 'Text', text: /⧖5h@39%~3h2\dm/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /⊘@95%~3h0\dm/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /↻4h00m·20%/ })).toBeDefined()
     await ui.unmount()
   })
 
