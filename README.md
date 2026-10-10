@@ -20,8 +20,8 @@ For Codex it is a pair of command hooks. A small Python CLI, `ug`, drives both.
 - **Priorities.** Each Claude session runs at `low`, `normal` or `high`.
   Lower priorities are paced earlier and harder, and borrow a higher class's
   terms progressively while that class sits idle on the machine.
-- **Visibility.** A band above the prompt shows both windows, Codex's, any
-  pacing or hold, and a button that cycles the session's priority. Every
+- **Visibility.** The prompt footer's right corner shows both windows, Codex's,
+  any pacing or hold, and the session's priority with buttons to step it. Every
   prompt carries a `[usage]` line as context; `ug status --json` has every
   number.
 
@@ -42,10 +42,13 @@ loads in every new session, terminal or desktop. `ug codex install` wires Codex.
 
 Python 3.9 or later, standard library only. The mod itself needs nothing.
 
-## The band
+## The footer
+
+Everything sits at the bottom right, where the prompt footer keeps its mode
+labels, on the terminal and in the desktop app:
 
 ```
-5h 20% +4 · 7d 65% +6▲ · cx 44% · ⧖ 20s ↺1h12m · [◇ normal ⇡60%△]
+5h 20% +4  7d 65% +6▲  cx 44%  ⧖ 20s ↺1h12m  ‹ ◇ normal ⇡60%△ ›
 ```
 
 | Mark | Meaning |
@@ -55,11 +58,10 @@ Python 3.9 or later, standard library only. The mod itself needs nothing.
 | `⧖ 20s ↺1h12m` | pacing: the per-call delay and when the window is back on pace |
 | `⊘ 5h →14:00` | a threshold hold and when it lifts (`⧖ 5h →…` for a pace hold) |
 | `○ off`, `⧖ off`, `○ no data`, `! stale` | the guard, pacing, or its data |
-| `▽ low`, `◇ normal`, `△ high` | the session's priority; the button cycles it (hotkey `p` while the band has focus) |
+| `▽ low`, `◇ normal`, `△ high` | the session's priority; `›` steps it up and `‹` down, wrapping (hotkeys `p` and `o` while the footer has focus) |
 | `⇡60%△`, `⇡△` | what it borrows: 60% of the way to high's terms, or high's terms whole |
 
-The same marks pin a one-liner under the prompt while the guard is acting, and
-`ug sessions` uses them. `/ug priority high` sets the priority by name, `/ug
+`ug sessions` uses the same marks. `/ug priority high` sets the priority by name, `/ug
 priority` cycles, `/ug` prints the position in words.
 
 A session starts at the plugin option `priority` (`/config`, default
@@ -90,7 +92,7 @@ above it: once no other session of that class has made a tool call for
 factor, linearly, and has them whole at `borrow_full_seconds` (600). Only then
 does it start on the next class up. A class with no session at all lends at
 once, so a lone low session on a quiet machine runs on high's terms, and drops
-back to its own within one call when a high session makes one. The band and
+back to its own within one call when a high session makes one. The footer and
 `ug sessions` say what each session is borrowing.
 
 The threshold hold is the account's wall and ignores priority.
@@ -110,6 +112,7 @@ ug sim --scenario burst --compare
 ug sim --scenario batch --policy priority --days 3 --seed 7
 ug sim --scenario mixed --compare --set pace_max_delay_seconds=120
 ug sim --scenario solo --set pace_mode=hold --json
+ug sim --scenario all --html sim.html
 ```
 
 | Scenario | Sessions |
@@ -127,7 +130,10 @@ the hourly strips of both windows and a row per priority: calls, nominal and
 achieved rate, mean and p95 wait, hours paced, held and at the wall, and the
 mean lift borrowed. `--set KEY=VALUE` overrides any key from `ug config` for
 the run. Runs are deterministic per seed; a week at the default 5s step takes
-about a second.
+about a second. `--html FILE` writes one self-contained page of the compared
+policies (every scenario with `--scenario all`): the window curves against the
+pace line and the threshold, a policy table to click through, and what each
+priority got.
 
 ## Where the numbers come from
 
@@ -216,14 +222,14 @@ Python side reads it from there.
 
 | Path | Role |
 |---|---|
-| `hooks/register.tsx` | The mod: guard, band, `/ug`, session registry |
+| `hooks/register.tsx` | The mod: guard, footer, `/ug`, session registry |
 | `hooks/pace.ts` | Pace math and the shapes on disk, pure |
 | `hooks/defaults.ts`, `hooks/pace-cases.ts` | The config table and parity cases both languages read |
 | `types/index.d.ts` | The mod's state contract |
 | `guardlib.py` | The same math for the CLI and Codex, the Codex reader, the report |
 | `codex-hook.py` | Codex's command hook |
 | `ug` | The CLI |
-| `simulate.py` | `ug sim`: the Markov-chain simulator |
+| `simulate.py`, `sim-page.html` | `ug sim`: the Markov-chain simulator and its page |
 
 ## Tests
 

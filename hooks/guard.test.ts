@@ -263,18 +263,20 @@ describe('priority: command and band', () => {
     expect((await run($, '')).text).toContain('[usage] claude 5h 70% (+32 over pace line)')
   })
 
-  test('the band shows the windows and the button cycles the priority on each surface', async ($, on) => {
+  test('the footer shows the windows and ‹ › step the priority on each surface', async ($, on) => {
     const w = world(on)
     config(w)
     await start($, w, fiveHour(w, 70))
     for (const surface of ['terminal', 'desktop'] as const) {
-      const ui = await $.ui.mount({ plugin: 'usage-guard', surface, component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 5, bodyColumns: 100, scroll: { top: 0, bodyRows: 5 }, view: {} } })
+      const ui = await $.ui.mount({ plugin: 'usage-guard', surface, component: 'SessionMode', props: { modes: ['focus'] } })
       expect(await ui.find({ type: 'Text', text: /70%/ })).toBeDefined()
-      expect((await ui.find({ key: 'priority' }))?.props['label']).toBe('◇ normal ⇡△')
-      await ui.press({ key: 'priority' })
-      expect((await ui.find({ key: 'priority' }))?.props['label']).toBe('△ high')
+      expect(await ui.find({ type: 'Text', text: /focus/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /◇ normal ⇡△/ })).toBeDefined()
+      await ui.press({ key: 'priority-up' })
+      expect(await ui.find({ type: 'Text', text: /△ high/ })).toBeDefined()
       expect((w.read('sessions/me.json') as { priority: string }).priority).toBe('high')
-      await ui.press({ key: 'priority' })
+      await ui.press({ key: 'priority-down' })
+      await ui.press({ key: 'priority-down' })
       expect((w.read('sessions/me.json') as { priority: string }).priority).toBe('low')
       await run($, 'priority normal')
       await ui.unmount()

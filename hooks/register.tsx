@@ -6,10 +6,13 @@
 // The waits run on the host (`sleep`), so they stay outside the hook's own
 // ten-second budget, and every poll re-reads config and usage.
 //
-// Priority: each session runs at low, normal or high (the band's button, `/ug
-// priority`, UG_PRIORITY, or the plugin option) and borrows an idle higher
+// Priority: each session runs at low, normal or high (the footer's ‹ › buttons,
+// `/ug priority`, UG_PRIORITY, or the plugin option) and borrows an idle higher
 // class's terms progressively; sessions/<id>.json under the guard's directory
 // is how sessions on this machine see each other.
+//
+// Everything shows at the bottom right, where the prompt footer keeps its mode
+// labels (`SessionMode`): both windows, Codex's, pacing or a hold, the priority.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
@@ -19,6 +22,7 @@ import {
   type Config,
   type Hold,
   type Pace,
+  PRIORITIES,
   type Priority,
   type SessionEntry,
   type Terms,
@@ -304,22 +308,11 @@ const publish = async (
     lastViewJson = json
     await update($, viewAtom, () => view)
   }
-  $.ui.status(statusText(view))
   return list
 }
 
-const statusText = (view: UsageGuardView): string | undefined => {
-  if (view.hold !== null) return `${view.hold.kind === 'pace' ? '⧖' : '⊘'} ${view.hold.label} →${fmtClock(view.hold.until)}`
-  if (view.pacing !== null && view.pacing.delaySeconds > 0) {
-    const ahead = view.windows.filter(w => w.pacing).map(w => `${w.label} +${Math.round(w.ahead)}`).join(' ')
-    return `⧖ ${Math.round(view.pacing.delaySeconds)}s/call · ${ahead} · ↺${fmtDuration(view.pacing.backIn)}`
-  }
-  return undefined
-}
-
-// Glyphs for the band and the pinned line: ▽ ◇ △ are low, normal, high; ⇡ is
-// borrowing (a percentage of the next class, or that class's glyph when whole);
-// ⧖ pacing, ⊘ a hold, ○ off.
+// Glyphs for the footer: ▽ ◇ △ are low, normal, high; ⇡ is borrowing (a
+// percentage of the next class, or that class's glyph when whole).
 const GLYPH: Record<Priority, string> = { low: '▽', normal: '◇', high: '△' }
 
 const liftGlyph = (priority: Priority, lift: number): string => {
@@ -514,10 +507,11 @@ const setPriority = async ($: EngineInterface, priority: Priority): Promise<void
   await publish($, p, cfg, await currentUsage($, p, now, s.lastMeasureAt), now, t)
 }
 
-const cyclePriority = async ($: EngineInterface): Promise<Priority> => {
-  const priority = nextPriority(session().priority)
+/** The next priority up (+1) or down (-1), wrapping; no toast, the footer shows it. */
+const stepPriority = async ($: EngineInterface, direction: 1 | -1): Promise<Priority> => {
+  const index = PRIORITIES.indexOf(session().priority)
+  const priority = PRIORITIES[(index + direction + PRIORITIES.length) % PRIORITIES.length] ?? 'normal'
   await setPriority($, priority)
-  $.ui.toast(`${GLYPH[priority]} ${priority}`)
   return priority
 }
 
@@ -542,8 +536,7 @@ export const register: Register = (on, options) => {
   const pctColor = (pct: number, threshold: number): 'error' | 'warning' | 'success' =>
     pct >= threshold ? 'error' : pct >= threshold * 0.66 ? 'warning' : 'success'
 
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey) return next(e)
+  on('ui.render', { component: 'SessionMode' }, async ($, e) => {
     const view = await read($, viewAtom)
     const priority = await read($, priorityAtom)
     const { Box, Button, Text } = $.ui.resolve(e)
@@ -551,6 +544,7 @@ export const register: Register = (on, options) => {
     const pacing = view?.pacing ?? null
     return (
       <Box flexDirection="row" gap={1}>
+        {e.props.modes.length > 0 && <Text dimColor>{e.props.modes.join(' & ')}</Text>}
         {view === null || (view.windows.length === 0 && !view.stale) ? (
           <Text dimColor>○ no data</Text>
         ) : view.windows.length === 0 ? (
@@ -584,7 +578,11 @@ export const register: Register = (on, options) => {
         )}
         {view !== null && !view.enabled && <Text color="warning">○ off</Text>}
         {view !== null && view.enabled && !view.paceEnabled && <Text color="warning">⧖ off</Text>}
-        <Button key="priority" hotkey="p" label={liftGlyph(priority, view?.lift ?? 0)} onPress={() => void cyclePriority($)} />
+        <Box gap={0}>
+          <Button key="priority-down" plain hotkey="o" label="‹" onPress={() => void stepPriority($, -1)} />
+          <Text> {liftGlyph(priority, view?.lift ?? 0)} </Text>
+          <Button key="priority-up" plain hotkey="p" label="›" onPress={() => void stepPriority($, 1)} />
+        </Box>
       </Box>
     )
   })
@@ -597,7 +595,7 @@ export const register: Register = (on, options) => {
     if (words[0] === 'priority') {
       const wanted = words[1]
       if (wanted === undefined) {
-        const priority = await cyclePriority($)
+        const priority = await stepPriority($, 1)
         return { text: `usage guard: this session now runs at ${priority} priority` }
       }
       if (!isPriority(wanted)) return { text: 'usage: /ug priority [low|normal|high]' }
