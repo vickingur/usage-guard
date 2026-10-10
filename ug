@@ -287,7 +287,7 @@ def marketplace_elsewhere(listing: str, here: Path) -> bool:
     for i, line in enumerate(lines):
         if line.strip().endswith("usage-guard") and i + 1 < len(lines):
             source = lines[i + 1].strip()
-            if source.startswith("Source:") and "Folder" in source:
+            if source.startswith("Source:") and ("Folder" in source or "Directory" in source):  # macOS and Linux builds differ
                 path = source.split("(", 1)[1].rstrip(")") if "(" in source else ""
                 return Path(path).resolve() != here.resolve()
     return False

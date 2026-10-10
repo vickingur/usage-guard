@@ -206,6 +206,14 @@ class UgTest(unittest.TestCase):
         self.assertTrue((self.dir / ".local" / "bin" / "ug").is_symlink())
         self.assertIn("removed legacy hooks.PreToolUse, hooks.UserPromptSubmit, statusLine", proc.stdout)
 
+    def test_install_recognises_a_linux_builds_marketplace_listing(self):
+        ns = {"__name__": "ugmod", "__file__": str(UG)}
+        exec(compile(UG.read_text(), str(UG), "exec"), ns)
+        here = UG.parent
+        self.assertFalse(ns["marketplace_elsewhere"](f"  > usage-guard\n    Source: Directory ({here})\n", here))
+        self.assertTrue(ns["marketplace_elsewhere"]("  > usage-guard\n    Source: Directory (/elsewhere)\n", here))
+        self.assertFalse(ns["marketplace_elsewhere"]("  > other\n    Source: Folder (/elsewhere)\n", here))
+
     def test_install_fails_without_claude_on_path(self):
         env = {**self.env, "PATH": str(self.dir)}
         proc = subprocess.run([sys.executable, str(UG), "install"], capture_output=True, text=True, env=env, timeout=30)
