@@ -100,7 +100,7 @@ svg { width: 100%; height: auto; display: block; font: 11px var(--mono); }
   // one tab per scenario and pace line; a run's tab is `scenario` or `scenario · line`
   const tabOf = r => r.profile === 'uniform' ? r.scenario : `${r.scenario} · ${r.profile} line`
   const scenarios = [...new Set(RUNS.map(tabOf))]
-  let scenario = scenarios[0], selected = 'priority'
+  let scenario = scenarios.find(s => s.startsWith('workweek')) ?? scenarios[0], selected = 'priority'
   const $ = id => document.getElementById(id)
   const runsOf = s => POLICIES.map(p => RUNS.find(r => tabOf(r) === s && r.policy === p)).filter(Boolean)
   const h = n => `${n.toFixed(1)}h`

@@ -6,3 +6,4 @@ codex-usage.json
 codex-blocked.json
 state.json
 sessions/
+.playwright-mcp/
