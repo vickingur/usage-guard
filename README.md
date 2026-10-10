@@ -1,210 +1,207 @@
 # usage-guard
 
-Statusline, hooks and a CLI that keep Claude Code inside its usage windows and
-tell agents where they stand, for Claude and Codex alike. Pure Python 3.9+,
-standard library only.
+Keeps Claude Code and Codex inside their usage windows and tells agents where
+they stand. For Claude it is a **mod**: a plugin of function hooks that runs
+inside Claude Code, in the terminal and in the desktop app, on macOS and Linux.
+For Codex it is a pair of command hooks. A small Python CLI, `ug`, drives both.
+
+```
+/plugin install usage-guard --marketplace vickingur/usage-guard
+```
+
+## What it does
+
+- **Threshold hold.** A window at or over its threshold (5h at 95%, 7d at 90%
+  by default) stalls every tool call until it resets, or until `ug release`,
+  `ug off`, or a raised threshold. The model burns nothing while stalled.
+- **Pacing.** Before the threshold, a window running ahead of its *pace line*
+  by more than a margin delays each tool call in proportion, and the model is
+  told why and advised to take fewer, larger steps.
+- **Priorities.** Each Claude session runs at `low`, `normal` or `high`.
+  Lower priorities are paced earlier and harder, and borrow a higher class's
+  terms progressively while that class sits idle on the machine.
+- **Visibility.** A band above the prompt shows both windows, Codex's, any
+  pacing or hold, and a button that cycles the session's priority. Every
+  prompt carries a `[usage]` line as context; `ug status --json` has every
+  number.
 
 ## Install
 
-    git clone https://github.com/vickingur/usage-guard ~/.claude/usage-guard
-    mkdir -p ~/.local/bin && ln -s ~/.claude/usage-guard/ug ~/.local/bin/ug
+From a checkout, on each machine:
 
-Then wire the statusline and the two hooks in `~/.claude/settings.json`:
-
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "python3 ~/.claude/usage-guard/statusline.py",
-    "refreshInterval": 3
-  },
-  "hooks": {
-    "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command",
-      "command": "python3 ~/.claude/usage-guard/guard-hook.py", "timeout": 21700}]}],
-    "UserPromptSubmit": [{"hooks": [{"type": "command",
-      "command": "python3 ~/.claude/usage-guard/brief-hook.py", "timeout": 10}]}]
-  }
-}
+```
+git clone https://github.com/vickingur/usage-guard ~/.claude/usage-guard
+~/.claude/usage-guard/ug install
 ```
 
-The hook `timeout` is in seconds and must stay above `max_stall_seconds` (see
-below). `ug status` confirms everything is wired once Claude Code has rendered
-the statusline at least once.
+`ug install` registers the checkout as a plugin marketplace, installs the
+plugin from it (so the folder is what runs: `git pull` then `/reload-plugins`
+updates it), removes the command hooks and statusline an earlier version wired
+into `~/.claude/settings.json`, and links `ug` into `~/.local/bin`. The plugin
+loads in every new session, terminal or desktop. `ug codex install` wires Codex.
 
-## Parts
+Python 3.9 or later, standard library only. The mod itself needs nothing.
 
-| File | Role |
-|---|---|
-| `statusline.py` | Renders the statusline **and** caches `rate_limits` to `usage.json` |
-| `guard-hook.py` | PreToolUse hook: holds tool calls at a threshold, paces them before it (`--vendor codex` under Codex) |
-| `brief-hook.py` | UserPromptSubmit hook: one line of usage context at every prompt (`--vendor codex` under Codex) |
-| `ug` | Control CLI (`~/.local/bin/ug`), including `ug codex install` |
-| `guardlib.py` | Shared paths, config, pace math, Codex reader, report |
+## The band
 
-## Why the statusline feeds the hooks
+```
+usage  5h 4%  7d 63% +4  cx 7d 44%  [ priority: normal, borrowing 60% of high ]
+```
 
-Claude Code passes `rate_limits` (the 5h and 7d percentages) **only** to the
-statusline command. Hooks never receive it. So the statusline writes what it
-sees to `usage.json`, and the hooks read that back. The statusline re-runs every
-3 seconds (`refreshInterval`), so the cache stays fresh while you are active.
+- `+4` is how far the window runs ahead of its pace line; dim within the
+  margin, amber with `▲` while pacing.
+- `pacing 20s/call, back in 1h12m` or `HOLD 5h until 14:00` appear while the
+  guard is acting; the same text is pinned under the prompt.
+- The button cycles low, normal, high (hotkey `p` while the band has focus).
+  `/ug priority high` sets it by name, `/ug priority` cycles, `/ug` prints the
+  position.
 
-If the cache is missing or older than `stale_after_seconds`, the hooks **fail
-open**: no data means no hold and no pacing.
+A session starts at the plugin option `priority` (`/config`, default
+`normal`), or at `UG_PRIORITY` from the environment when set:
+`UG_PRIORITY=low claude -p "..."` for a batch job that should yield.
 
-The cache is **merged, not replaced**. `rate_limits` is rebuilt per render and a
-window can drop out of it transiently; replacing wholesale would blind the guard
-to a window that is still active. A carried-over window is kept only until its
-own `resets_at` passes.
+## Pace lines, terms and borrowing
 
-## Codex
+Each window has a **pace line**: the usage you would have now if spend were
+spread evenly across the window and landed exactly on the threshold at reset.
+Two hours into a 5h window with a 95% threshold the line is 38%. The window is
+**ahead** by `used - line`. Pacing engages when ahead exceeds the session's
+**margin** and usage is at least `pace_min_used_pct` (30%, so a burst right
+after a reset is left alone). Each call then sleeps `pace_seconds_per_pct` per
+point over the margin, capped at `pace_max_delay_seconds`; both scaled by the
+session's **delay factor**.
 
-Codex CLI (0.159 and later) runs the same two hooks, so Codex sessions get the
-same threshold hold, pacing and `[usage]` line. Install with
+| Priority | Margin | Delay | Example: 2h into 5h at 70% (32 ahead) |
+|---|---|---|---|
+| high | the window's (20 / 15) | x1 | 12 over, 30s per call (the cap) |
+| normal | half | x2 | 22 over, 60s per call |
+| low | none | x4 | 32 over, 120s per call |
 
-    ug codex install
+**Borrowing.** Sessions on one machine see each other through
+`~/.claude/usage-guard/sessions/`. A session below `high` watches the class
+above it: once no other session of that class has made a tool call for
+`borrow_after_seconds` (120) it starts taking on that class's margin and delay
+factor, linearly, and has them whole at `borrow_full_seconds` (600). Only then
+does it start on the next class up. A class with no session at all lends at
+once, so a lone low session on a quiet machine runs on high's terms, and drops
+back to its own within one call when a high session makes one. The band and
+`ug sessions` say what each session is borrowing.
 
-which adds the guard's `UserPromptSubmit` and `PreToolUse` entries to
-`~/.codex/hooks.json` and records their trust hashes in `~/.codex/config.toml`.
-Codex only runs hooks it has been told to trust, normally through a review in
-its TUI; the hash is a SHA-256 over the normalized hook definition, so the
-install step computes it and stands in for that review for these two hooks
-only. Other hooks and trust entries are left untouched. `ug codex trusted`
-exits 0 when everything is in place.
+The threshold hold is the account's wall and ignores priority.
 
-Codex has no statusline, but every turn's `token_count` event in its session
-log carries the rate limits the API returned, and the hooks receive the live
-transcript's path. Each hook refreshes `codex-usage.json` from it before
-deciding, so Codex pacing works from Codex's own numbers; the `[usage]` line a
-Codex agent receives covers both vendors. Without the hooks, the newest log
-under `~/.codex/sessions` stands in for reporting, and `ug status` says which
-source it is reading. A `window_minutes` of 300 maps to 5h and 10080 to 7d; a
-window that has reset since the reading is dropped.
+## Where the numbers come from
 
-## Two mechanisms
+Claude Code hands its rate limits to the mod directly (`$.session.usage()` and
+the `session.measure` event), so nothing is scraped and no statusline is
+needed. The mod writes what it sees to `usage.json` for `ug`, and its session
+entry to `sessions/<id>.json` for the other sessions. Without a reading (a
+session's first turn, or data older than `stale_after_seconds`) the guard
+**fails open**.
 
-### Threshold hold
+Codex has no plugin system: `ug codex install` adds one command hook for its
+`UserPromptSubmit` and `PreToolUse` events to `~/.codex/hooks.json` and records
+their trust hashes in `~/.codex/config.toml`, standing in for the review Codex
+would ask for in its TUI. Every turn's `token_count` event in a Codex session
+log carries the rate limits the API returned; the hook refreshes
+`codex-usage.json` from the live transcript before deciding. Codex sessions
+run on the account terms.
 
-A window at or over its threshold stops tool calls until it resets. The hook
-*blocks its own process* rather than denying: a `deny` tells the model "no" and
-it keeps going and keeps burning tokens; a blocked hook stalls the agentic loop
-outright. Each tick (default 5s) it re-reads config and cache, so it releases as
-soon as any of these becomes true:
+## How the hold works inside a mod
 
-- the window's `resets_at` passes
-- usage drops below the threshold
-- the threshold is raised above current usage
-- `ug off`
-- `ug release`
+A hook has ten seconds of its own time per dispatch, but time spent inside an
+engine call is free. The guard therefore waits on the host (`sleep`, present on
+every macOS and Linux) in chunks of `poll_seconds`, re-reading config, usage and
+`state.json` between chunks, so every escape hatch takes effect within one
+poll. `max_stall_seconds` (6h) caps a hold; past it the call is denied with the
+reset time. Should the hook itself be lost mid-hold, its fallback denies the
+call rather than letting it through; a fault while merely pacing lets the call
+run.
 
-While held, the statusline shows a red `HOLD 5h until 14:00 (41m)` badge.
-
-`max_stall_seconds` (default 21600 = 6h) caps a single hold. The settings.json
-hook `timeout` is 21700, just above it, so the hook's own fallback fires before
-Claude Code times the hook out and discards its decision. When the budget is
-exhausted, realistic for a 7-day window that resets days away, the hook falls
-back to a `deny` that names the window, its reset time and how to override.
-
-### Pacing
-
-The threshold only bites at the end. Pacing acts earlier so the budget lasts
-until the reset.
-
-Each window has a **pace line**: the usage you would have right now if spend
-were spread evenly across the window and landed exactly on the threshold at
-reset. Two hours into a 5h window with a 95% threshold the line is 38%. The
-window is **ahead** by `used - line`. When ahead exceeds the window's **margin**
-(default 20 points for 5h, 15 for 7d) and usage is at least `pace_min_used_pct`
-(default 30%, so a burst right after a reset is left alone), pacing engages:
-
-- `delay` mode (default): every tool call sleeps `pace_seconds_per_pct` seconds
-  per point over the margin, capped at `pace_max_delay_seconds`. 4 points over
-  at the defaults is 20s per call; 6 or more points over hits the 30s cap. The
-  cap is deliberately moderate: pacing is a nudge that roughly halves the burn
-  rate and tells the model why, not a wall.
-- `hold` mode: the call waits until the line has caught up to `used - margin`,
-  bounded by `max_stall_seconds`. A pace hold ends in an allow, never a deny.
-
-Either way the call then proceeds and the model receives `additionalContext`
-saying which window is ahead, by how much, what is being done about it and when
-it will be back on pace, with the advice to keep working through the delays,
-prefer fewer, larger steps and defer fan-outs and long loops. The hook does the
-pacing; the model is told never to stop, pause or ask to continue because of it. The statusline marks each window with `+12` (dim) when
-ahead within the margin and `+32▲` (amber) when pacing; a pace hold shows as an
-amber `HOLD pace 5h until …` badge.
-
-Switching pacing off, disabling the guard, or `ug release` ends a delay or a
-pace hold within one poll tick.
-
-## Telling agents where they are
-
-- `brief-hook.py` runs on every prompt and adds one line, for example
-  `[usage] claude 5h 62% (+17 over pace line) PACING 40s/call, 7d 71% (+11 over pace line) · codex 7d 2%`,
-  with the advice appended whenever anything is ahead of pace. Silent without data.
-- `ug status --json` is the machine-readable form, for scripts, skills and Codex
-  agents: per vendor and window, used%, threshold, pace line, ahead, margin,
-  pacing state, delay, catch-up and reset times, plus the same brief line.
-- `ug brief` prints the one line on its own.
+Overhead when nothing is ahead: a few file reads per tool call, in-process. The
+registry is re-read at most every five seconds.
 
 ## Commands
 
-    ug status [--json]     guard state, both vendors, pace lines, any hold
+    ug status [--json]     guard state, both vendors, pace lines, sessions, any hold
     ug brief               the one-line position agents receive at every prompt
+    ug sessions            live Claude sessions: priority, borrowing, last call, holds
+    ug priority P [ID]     set a session's priority; ID is an id prefix, optional with one session
     ug on | off            enable / disable the guard
-    ug threshold           show both thresholds
-    ug threshold 5h 95     set the 5-hour threshold
-    ug threshold 7d 90     set the weekly threshold
+    ug threshold [W PCT]   show, or set, the threshold for 5h or 7d
     ug pace                show pacing settings
     ug pace on | off       enable / disable pacing (the threshold hold stays)
-    ug pace mode delay     or hold
-    ug pace margin 7d 8    how far ahead of the pace line the window may run
-    ug pace set KEY VALUE  pace_min_used_pct, pace_seconds_per_pct, pace_max_delay_seconds
-    ug codex install       add the guard's hooks to Codex and trust them
-    ug codex trusted       exit 0 when Codex has the hooks and trusts them
+    ug pace mode M         delay or hold
+    ug pace margin W PCT   how far ahead of the pace line window W may run
+    ug pace set KEY VALUE  any numeric pacing, priority or borrow setting
+    ug install             install the plugin from this checkout, drop the legacy hooks
+    ug codex install       add the guard's hook to Codex and trust it
+    ug codex trusted       exit 0 when Codex has the hook and trusts it
     ug release             release an in-progress hold now
     ug config              effective settings as JSON
 
-## Config: `config.json` (node-local, not synced)
+Inside a session: `/ug`, `/ug priority`, `/ug priority low|normal|high`.
+
+## Config: `config.json` (node-local)
 
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `true` | Master switch |
 | `threshold_5h` | `95.0` | Hold when the 5h window reaches this percent |
 | `threshold_7d` | `90.0` | Hold when the 7d window reaches this percent |
-| `max_stall_seconds` | `21600` | Cap on a single hold before falling back to deny (threshold) or allow (pace) |
+| `max_stall_seconds` | `21600` | Cap on a single hold before a deny (threshold) or an allow (pace) |
 | `poll_seconds` | `5` | How often a hold or delay re-checks for release |
-| `stale_after_seconds` | `600` | Cache older than this is ignored (fails open) |
+| `stale_after_seconds` | `600` | Usage older than this is ignored (fails open) |
 | `pace_enabled` | `true` | Pacing on or off |
 | `pace_mode` | `"delay"` | `delay` or `hold` |
-| `pace_margin_5h` | `20.0` | Points ahead of the 5h pace line tolerated before pacing |
+| `pace_margin_5h` | `20.0` | Points ahead of the 5h pace line a high session may run |
 | `pace_margin_7d` | `15.0` | Same for the weekly window |
 | `pace_min_used_pct` | `30.0` | Pacing never engages below this usage |
 | `pace_seconds_per_pct` | `5.0` | Delay per point over the margin |
-| `pace_max_delay_seconds` | `30.0` | Cap on the per-call delay |
+| `pace_max_delay_seconds` | `30.0` | Cap on the per-call delay at delay factor 1 |
+| `priority_margin_factor_normal` | `0.5` | A normal session's share of the margin |
+| `priority_margin_factor_low` | `0.0` | A low session's share |
+| `priority_delay_factor_normal` | `2.0` | Stretch on a normal session's delays |
+| `priority_delay_factor_low` | `4.0` | Stretch on a low session's delays |
+| `borrow_after_seconds` | `120` | Idle time of the class above before borrowing starts |
+| `borrow_full_seconds` | `600` | Idle time at which the class above is borrowed whole |
+| `session_stale_seconds` | `21600` | A session entry older than this no longer counts |
 | `codex_log_max_age_seconds` | `604800` | Oldest Codex session log that still counts |
 
-The file only needs the keys you want to override; the rest fall back to
-defaults. A corrupt file falls back to defaults entirely. Runtime state
-(`usage.json`, `codex-usage.json`, `state.json`, `blocked.json`, `codex-blocked.json`)
-is node-local too.
+Only the keys you want to override need to be there; a key of the wrong type
+is left at its default. The table lives once, in `hooks/defaults.ts`, and the
+Python side reads it from there.
+
+## Layout
+
+| Path | Role |
+|---|---|
+| `hooks/register.tsx` | The mod: guard, band, `/ug`, session registry |
+| `hooks/pace.ts` | Pace math and the shapes on disk, pure |
+| `hooks/defaults.ts`, `hooks/pace-cases.ts` | The config table and parity cases both languages read |
+| `types/index.d.ts` | The mod's state contract |
+| `guardlib.py` | The same math for the CLI and Codex, the Codex reader, the report |
+| `codex-hook.py` | Codex's command hook |
+| `ug` | The CLI |
+
+## Tests
+
+    claude plugin test ~/.claude/usage-guard
+    python3 -B -m unittest discover -s ~/.claude/usage-guard/tests
+
+The mod's tests run against Claude Code's own engine with the file system,
+clock and host sleeps answered in memory. The Python tests redirect every path
+with `UG_DIR`, `UG_CODEX_SESSIONS`, `UG_CODEX_HOME` and `UG_CLAUDE_SETTINGS`,
+so they never touch live state. `tests/test_parity.py` and `hooks/pace.test.ts`
+run the same cases, so the two implementations cannot drift.
 
 ## Limitations
 
 - The hold and the delay stop **tool calls**, not token spend generally. The
   model can still reply in prose during a held turn.
-- `rate_limits` is absent until Claude Code has seen a limit from the API,
-  typically after the first turn of a session. Until then the guard fails open.
-- Without the Codex hooks, Codex numbers are as fresh as its newest session log;
-  `ug status` shows the age and the source.
-- Overhead is about 25ms per tool call when not pacing, and about 45ms per prompt
-  for the brief.
-
-## Tests
-
-    python3 -B -m unittest discover -s ~/.claude/usage-guard/tests
-
-Over 100 tests, no dependencies, Python 3.9 upwards. They use `UG_DIR` and
-`UG_CODEX_SESSIONS` to redirect all state to a temp directory, so running them
-never touches live config or triggers a real hold.
+- Rate limits arrive with the first API response of a session; until then the
+  guard fails open.
+- Borrowing is per machine: sessions on other machines sharing the account are
+  not seen.
 
 ## License
 

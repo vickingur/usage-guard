@@ -6,9 +6,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import guardlib as g  # noqa: E402
 
-HOOK = ROOT / "guard-hook.py"
-BRIEF = ROOT / "brief-hook.py"
+HOOK = ROOT / "codex-hook.py"
 UG = ROOT / "ug"
+PRE = ("--event", "pre_tool_use")
+BRIEF = ("--event", "user_prompt_submit")
 
 
 def transcript(path: Path, seven_pct, five_pct=None, now=None):
@@ -68,7 +69,7 @@ class CodexFixture(unittest.TestCase):
 class CodexHookTest(CodexFixture):
     def test_brief_hook_reads_the_live_transcript_and_caches_it(self):
         transcript(self.transcript, seven_pct=12.0)
-        proc, _ = self.invoke(BRIEF, self.payload("UserPromptSubmit", prompt="hi"), "--vendor", "codex")
+        proc, _ = self.invoke(HOOK, self.payload("UserPromptSubmit", prompt="hi"), *BRIEF)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("codex 7d 12%", self.context(proc))
         cache = json.loads((self.dir / "codex-usage.json").read_text())
@@ -76,14 +77,14 @@ class CodexHookTest(CodexFixture):
 
     def test_guard_hook_is_silent_and_fast_when_codex_usage_is_on_pace(self):
         transcript(self.transcript, seven_pct=12.0)
-        proc, took = self.invoke(HOOK, self.payload("PreToolUse", tool_name="Bash", tool_input={}), "--vendor", "codex")
+        proc, took = self.invoke(HOOK, self.payload("PreToolUse", tool_name="Bash", tool_input={}), *PRE)
         self.assertEqual(proc.stdout, "")
         self.assertLess(took, 1.0)
 
     def test_guard_hook_paces_codex_from_its_own_transcript(self):
         # 2h into the 5h window at 70%: pace line 38, 32 ahead, 12 over -> 1.2s delay
         transcript(self.transcript, seven_pct=12.0, five_pct=70.0)
-        proc, took = self.invoke(HOOK, self.payload("PreToolUse", tool_name="Bash", tool_input={}), "--vendor", "codex")
+        proc, took = self.invoke(HOOK, self.payload("PreToolUse", tool_name="Bash", tool_input={}), *PRE)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertGreaterEqual(took, 1.1)
         ctx = self.context(proc)
@@ -93,7 +94,7 @@ class CodexHookTest(CodexFixture):
     def test_guard_hook_holds_codex_at_the_threshold_and_denies_past_the_budget(self):
         (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "max_stall_seconds": 0.5}))
         transcript(self.transcript, seven_pct=99.0)
-        proc, took = self.invoke(HOOK, self.payload("PreToolUse", tool_name="Bash", tool_input={}), "--vendor", "codex")
+        proc, took = self.invoke(HOOK, self.payload("PreToolUse", tool_name="Bash", tool_input={}), *PRE)
         self.assertGreaterEqual(took, 0.4)
         out = json.loads(proc.stdout)["hookSpecificOutput"]
         self.assertEqual(out["permissionDecision"], "deny")
@@ -103,7 +104,7 @@ class CodexHookTest(CodexFixture):
     def test_codex_hold_marker_is_separate_from_claudes(self):
         (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "max_stall_seconds": 5}))
         transcript(self.transcript, seven_pct=99.0)
-        proc = subprocess.Popen([sys.executable, str(HOOK), "--vendor", "codex"], stdin=subprocess.PIPE,
+        proc = subprocess.Popen([sys.executable, str(HOOK), *PRE], stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env)
         try:
             proc.communicate(input=self.payload("PreToolUse", tool_name="Bash", tool_input={}), timeout=0.8)
@@ -111,9 +112,94 @@ class CodexHookTest(CodexFixture):
         except subprocess.TimeoutExpired:
             pass
         self.assertTrue((self.dir / "codex-blocked.json").exists())
-        self.assertFalse((self.dir / "blocked.json").exists())
+        self.assertFalse((self.dir / "sessions").exists())  # Claude's registry is the mod's alone
         proc.kill()
         proc.communicate()
+
+    def test_hook_without_an_event_fails_loudly(self):
+        proc, _ = self.invoke(HOOK, "{}")
+        self.assertEqual(proc.returncode, 2)
+        proc, _ = self.invoke(HOOK, "{}", "--event", "stop")
+        self.assertEqual(proc.returncode, 2)
+
+    def test_brief_is_silent_without_any_usage_data(self):
+        proc, _ = self.invoke(HOOK, "{}", *BRIEF)
+        self.assertEqual((proc.returncode, proc.stdout), (0, ""))
+
+    def test_hooks_survive_malformed_stdin(self):
+        transcript(self.transcript, seven_pct=12.0)
+        for event in (PRE, BRIEF):
+            proc, _ = self.invoke(HOOK, "{bad", *event)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def start_hold(self, seven_pct=99.0, **cfg):
+        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "max_stall_seconds": 30, **cfg}))
+        transcript(self.transcript, seven_pct=seven_pct)
+        proc = subprocess.Popen([sys.executable, str(HOOK), *PRE], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, env=self.env)
+        proc.stdin.write(self.payload("PreToolUse", tool_name="Bash", tool_input={}))
+        proc.stdin.close()
+        time.sleep(0.6)
+        self.assertIsNone(proc.poll(), "the hook should still be holding")
+        return proc
+
+    def finish(self, proc):
+        out, err = proc.communicate(timeout=10)
+        self.assertEqual(proc.returncode, 0, err)
+        return out
+
+    def test_ug_release_ends_a_codex_hold(self):
+        proc = self.start_hold()
+        self.assertEqual(self.invoke(UG, "", "release")[0].returncode, 0)
+        self.assertNotIn("deny", self.finish(proc))
+        self.assertFalse((self.dir / "codex-blocked.json").exists())
+
+    def test_ug_off_ends_a_codex_hold(self):
+        proc = self.start_hold()
+        self.invoke(UG, "", "off")
+        self.assertNotIn("deny", self.finish(proc))
+
+    def test_raising_the_threshold_above_usage_ends_a_codex_hold(self):
+        proc = self.start_hold(seven_pct=92.0)
+        self.invoke(UG, "", "threshold", "7d", "99")
+        self.assertNotIn("deny", self.finish(proc))
+
+    def test_ug_status_shows_the_codex_hold(self):
+        proc = self.start_hold()
+        proc_status, _ = self.invoke(UG, "", "status")
+        self.assertIn("HOLD", proc_status.stdout)
+        self.assertIn("codex: active on 7d", proc_status.stdout)
+        proc.kill(); proc.communicate()
+
+    def test_switching_pacing_off_mid_delay_releases_at_once(self):
+        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "pace_max_delay_seconds": 20, "pace_seconds_per_pct": 2}))
+        transcript(self.transcript, seven_pct=12.0, five_pct=70.0)
+        proc = subprocess.Popen([sys.executable, str(HOOK), *PRE], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, env=self.env)
+        proc.stdin.write(self.payload("PreToolUse", tool_name="Bash", tool_input={})); proc.stdin.close()
+        time.sleep(0.5)
+        self.assertIsNone(proc.poll())
+        self.invoke(UG, "", "pace", "off")
+        out = self.finish(proc)
+        self.assertEqual(out, "")
+
+    def test_hold_mode_releases_when_fresh_usage_is_back_on_pace(self):
+        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "pace_mode": "hold", "max_stall_seconds": 30}))
+        transcript(self.transcript, seven_pct=12.0, five_pct=70.0)
+        proc = subprocess.Popen([sys.executable, str(HOOK), *PRE], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, env=self.env)
+        proc.stdin.write(self.payload("PreToolUse", tool_name="Bash", tool_input={})); proc.stdin.close()
+        time.sleep(0.6)
+        self.assertIsNone(proc.poll(), "the hook should still be holding")
+        marker = json.loads((self.dir / "codex-blocked.json").read_text())
+        self.assertTrue(marker["label"].startswith("pace"))
+        now = time.time()
+        (self.dir / "codex-usage.json").write_text(json.dumps({
+            "ts": now, "seven_day": {"used_percentage": 12.0, "resets_at": int(now + 5 * 86400)},
+            "five_hour": {"used_percentage": 50.0, "resets_at": int(now + 3 * 3600)}}))
+        out = self.finish(proc)
+        self.assertIn("this call was held", json.loads(out)["hookSpecificOutput"]["additionalContext"])
+        self.assertFalse((self.dir / "codex-blocked.json").exists())
 
     def test_hook_cache_beats_the_session_log_scan_while_fresh(self):
         transcript(self.transcript, seven_pct=12.0)
@@ -154,13 +240,13 @@ class FreshSessionTest(CodexFixture):
     def test_brief_on_the_first_prompt_still_shows_codex_from_the_previous_session(self):
         self.older_log(seven_pct=33.0)
         self.fresh_transcript()
-        proc, _ = self.invoke(BRIEF, self.payload("UserPromptSubmit", prompt="hi"), "--vendor", "codex")
+        proc, _ = self.invoke(HOOK, self.payload("UserPromptSubmit", prompt="hi"), *BRIEF)
         self.assertIn("codex 7d 33%", self.context(proc))
 
     def test_guard_paces_a_fresh_session_from_the_previous_sessions_numbers(self):
         self.older_log(seven_pct=12.0, five_pct=70.0, age=30)
         self.fresh_transcript()
-        proc, took = self.invoke(HOOK, self.payload("PreToolUse", tool_name="Bash", tool_input={}), "--vendor", "codex")
+        proc, took = self.invoke(HOOK, self.payload("PreToolUse", tool_name="Bash", tool_input={}), *PRE)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertGreaterEqual(took, 1.1)
         self.assertIn("5h window at 70%", self.context(proc))
@@ -168,7 +254,7 @@ class FreshSessionTest(CodexFixture):
     def test_guard_fails_open_when_the_only_numbers_are_stale(self):
         self.older_log(seven_pct=99.0, age=3600)  # older than stale_after_seconds (600)
         self.fresh_transcript()
-        proc, took = self.invoke(HOOK, self.payload("PreToolUse", tool_name="Bash", tool_input={}), "--vendor", "codex")
+        proc, took = self.invoke(HOOK, self.payload("PreToolUse", tool_name="Bash", tool_input={}), *PRE)
         self.assertEqual(proc.stdout, "")
         self.assertLess(took, 1.0)
 
