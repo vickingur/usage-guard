@@ -48,21 +48,27 @@ Everything sits at the bottom right, where the prompt footer keeps its mode
 labels, on the terminal and in the desktop app:
 
 ```
-5h 20% +4  7d 65% +6▲  cx 44%  ⧖ 20s ↺1h12m  ‹ ◇ normal ⇡60%△ ›
+● 5h 31% +2 ↻3h32m·29%  7d 67% +8 ↻2d9h·66%  cx 44%  ⧖5h@45%~1h20m ⊘@95%~4h  ‹ ◇ normal ⇡△ ›
 ```
 
 | Mark | Meaning |
 |---|---|
-| `+4` | how far the window runs ahead of its pace line; dim within the margin, amber with `▲` while pacing |
+| `●` `⧖` `⊘` `○` `~` `·` | the guard's state: fine, pacing, held, off, figures older than ten minutes, no data yet |
+| `5h 31% +2` | used, and how far ahead of the pace line; `+8▲` in amber while pacing |
+| `↻3h32m·29%` | time until the window resets, and how much of the window has elapsed |
 | `cx 3%/44%` | Codex's 5h and 7d windows (one figure when only one is known) |
-| `⧖ 20s ↺1h12m` | pacing: the per-call delay and when the window is back on pace |
-| `⊘ 5h →14:00` | a threshold hold and when it lifts (`⧖ 5h →…` for a pace hold) |
-| `○ off`, `⧖ off`, `○ no data`, `! stale` | the guard, pacing, or its data |
+| `⧖5h@45%~1h20m` | pacing would start at 45% on the 5h window, in about 1h20m at the current burn rate |
+| `⊘@95%~4h` | the hold would start at 95%, in about 4h; the rate is read off the last hour of readings and left out until there is one |
+| `⧖20s ↺1h12m` | while pacing: the per-call delay and when the window is back on pace |
+| `⊘ 41m →14:00` | while held: how long until the hold lifts, and when |
+| `~22m` | the figures are from 22 minutes ago (the session has been idle) |
 | `▽ low`, `◇ normal`, `△ high` | the session's priority; `›` steps it up and `‹` down, wrapping (hotkeys `p` and `o` while the footer has focus) |
 | `⇡60%△`, `⇡△` | what it borrows: 60% of the way to high's terms, or high's terms whole |
 
-`ug sessions` uses the same marks. `/ug priority high` sets the priority by name, `/ug
-priority` cycles, `/ug` prints the position in words.
+The `[usage]` line the model reads says the same in words, with the reset
+times and the block and unblock points. `ug sessions` uses the same marks.
+`/ug priority high` sets the priority by name, `/ug priority` cycles, `/ug`
+prints the position in words.
 
 A session starts at the plugin option `priority` (`/config`, default
 `normal`), or at `UG_PRIORITY` from the environment when set:

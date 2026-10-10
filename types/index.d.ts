@@ -8,6 +8,10 @@ export type UsageGuardWindow = {
   pacing: boolean
   delaySeconds: number
   resetsIn: number
+  elapsedPct: number
+  paceAt: number
+  etaPaceSeconds?: number
+  etaHoldSeconds?: number
 }
 
 export type UsageGuardView = {
