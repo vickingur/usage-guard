@@ -715,8 +715,9 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // The desktop's band above the prompt: what the terminal footer packs into
-  // glyphs, one row per window in words. Other surfaces keep the footer alone.
+  // The desktop's band above the prompt: one terse row per window. Other surfaces
+  // keep the footer alone.
+  const eta = (seconds: number | undefined): string => (seconds === undefined ? '' : ` ~${fmtDuration(seconds)}`)
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.surface !== 'desktop' || e.props.hasSurvey) return next(e)
     const view = await read($, viewAtom)
@@ -730,35 +731,23 @@ export const register: Register = (on, options) => {
         {view.windows.map(w => (
           <Box key={`window-${w.label}`} flexDirection="row" gap={1}>
             <Text bold>{w.label}</Text>
-            <Text color={view.stale ? undefined : pctColor(w.pct, w.holdAt)} dimColor={view.stale} bold>
-              {Math.round(w.pct)}% used
-            </Text>
-            {w.ahead >= 0.5 && (
-              <Text color={w.pacing ? 'warning' : undefined} dimColor={!w.pacing}>{Math.round(w.ahead)} over the pace line</Text>
-            )}
+            <Text color={view.stale ? undefined : pctColor(w.pct, w.holdAt)} dimColor={view.stale} bold>{Math.round(w.pct)}%</Text>
+            {w.ahead >= 0.5 && <Text color={w.pacing ? 'warning' : undefined} dimColor={!w.pacing}>▴{Math.round(w.ahead)}</Text>}
             <Text dimColor>
-              · resets in {fmtDuration(w.resetsIn)} ({fmtWhen(now + w.resetsIn, now)}), {w.elapsedPct}% of the window gone
-            </Text>
-            <Text dimColor>
-              · pacing from {Math.round(w.paceAt)}%{w.etaPaceSeconds === undefined ? '' : ` in ~${fmtDuration(w.etaPaceSeconds)}`},
-              hold at {Math.round(w.holdAt)}%{w.etaHoldSeconds === undefined ? '' : ` in ~${fmtDuration(w.etaHoldSeconds)}`}
+              resets {fmtWhen(now + w.resetsIn, now)} ({fmtDuration(w.resetsIn)}) · pace {Math.round(w.paceAt)}%{eta(w.etaPaceSeconds)} · hold {Math.round(w.holdAt)}%{eta(w.etaHoldSeconds)}
             </Text>
           </Box>
         ))}
         {hold !== null && (
           <Text key="hold" color={hold.kind === 'pace' ? 'warning' : 'error'} bold>
-            {hold.kind === 'pace' ? '◔ waiting for the pace line' : '⊘ held at the limit'} on {hold.label}: resumes in {fmtDuration(hold.until - now)} ({fmtWhen(hold.until, now)})
+            {hold.kind === 'pace' ? '◔' : '⊘'} paused on {hold.label} until {fmtWhen(hold.until, now)} ({fmtDuration(hold.until - now)})
           </Text>
         )}
         {isPacing && view.pacing !== null && (
-          <Text key="pacing" color="warning" bold>
-            ◔ pacing {Math.round(view.pacing.delaySeconds)}s per tool call, back on pace in {fmtDuration(view.pacing.backIn)}
-          </Text>
+          <Text key="pacing" color="warning" bold>◔ {Math.round(view.pacing.delaySeconds)}s per call, on pace in {fmtDuration(view.pacing.backIn)}</Text>
         )}
-        {view.stale && <Text key="stale" dimColor>as of {fmtDuration(view.ageSeconds)} ago</Text>}
-        {view.codex.length > 0 && (
-          <Text key="codex" dimColor>codex {view.codex.map(w => `${w.label} ${Math.round(w.pct)}%`).join(' · ')}</Text>
-        )}
+        {view.stale && <Text key="stale" dimColor>~{fmtDuration(view.ageSeconds)} old</Text>}
+        {view.codex.length > 0 && <Text key="codex" dimColor>codex {view.codex.map(w => `${w.label} ${Math.round(w.pct)}%`).join(' ')}</Text>}
       </Box>
     )
   })

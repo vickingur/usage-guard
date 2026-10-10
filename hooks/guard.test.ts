@@ -363,7 +363,7 @@ describe('the desktop', () => {
     await ui.unmount()
   })
 
-  test('the band above the prompt spells each window out, and the terminal draws none', async ($, on) => {
+  test('the band above the prompt has one terse row per window, and the terminal draws none', async ($, on) => {
     on('ui.render', ($, e) => $.ui.resolve(e).Box({})) // the engine's own band beneath: an empty box
     const w = world(on)
     config(w)
@@ -371,17 +371,16 @@ describe('the desktop', () => {
     const props = { hasSurvey: false, isWorking: false, maxRows: 12, bodyColumns: 120, scroll: { offset: 0, bodyRows: 12 }, view: {} }
     const band = { component: 'AbovePrompt', props } as const
     const ui = await $.ui.mount({ plugin: 'usage-guard', surface: 'desktop', ...band })
-    expect(await ui.find({ type: 'Text', text: '70% used' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '32 over the pace line' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /resets in 3h00m \(\d\d:\d\d\), 40% of the window gone/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /pacing from 58%, hold at 95%/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /◔ pacing 30s per tool call, back on pace in/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '70%' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '▴32' })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /^resets/ }))?.text).toMatch(/^resets \d\d:\d\d \(3h00m\) · pace 58% · hold 95%$/)
+    expect(await ui.find({ type: 'Text', text: /^◔ 30s per call, on pace in \d+m$/ })).toBeDefined()
     await ui.unmount()
     const survey = await $.ui.mount({ plugin: 'usage-guard', surface: 'desktop', component: 'AbovePrompt', props: { ...props, hasSurvey: true } })
-    expect(await survey.find({ type: 'Text', text: /used/ })).toBe(undefined)
+    expect(await survey.find({ type: 'Text', text: /resets/ })).toBe(undefined)
     await survey.unmount()
     const terminal = await $.ui.mount({ plugin: 'usage-guard', surface: 'terminal', ...band })
-    expect(await terminal.find({ type: 'Text', text: /used/ })).toBe(undefined)
+    expect(await terminal.find({ type: 'Text', text: /resets \d/ })).toBe(undefined)
     await terminal.unmount()
   })
 })
