@@ -14,7 +14,7 @@
   ug pace margin W PCT   how far ahead of the pace line window 5h or 7d may run
   ug pace set KEY VALUE  any numeric pacing or priority setting (see `ug config`)
   ug pace profile        show the weekly profile the 7d pace line follows
-  ug pace profile uniform | workweek      a preset
+  ug pace profile uniform | workweek | weekend   a preset
   ug pace profile days 1,1,1,1,1,.3,.3    a weight per day, Monday first
   ug pace profile hours 8-23[,H-H]        active hours get weight 1, the rest 0.1
   ug sim [...]           simulate sessions against the guard's policy (ug sim --help)
@@ -167,6 +167,7 @@ def cmd_pace(args):
 PROFILE_PRESETS = {
     "uniform": ([1.0] * 7, [1.0] * 24),
     "workweek": ([1.0] * 5 + [0.3, 0.3], [0.1] * 8 + [1.0] * 15 + [0.1]),
+    "weekend": ([0.3, 0.3, 0.3, 0.3, 0.5, 1.0, 1.0], [0.1] * 8 + [1.0] * 15 + [0.1]),
 }
 DAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
