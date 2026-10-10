@@ -130,7 +130,7 @@ describe('config', () => {
   test('a key of the wrong type and an unknown key are left at the default', () => {
     const cfg = parseConfig({ threshold_5h: '80', pace_mode: 'sideways', nope: 1, poll_seconds: 2 })
     expect(cfg.threshold_5h).toBe(95)
-    expect(cfg.pace_mode).toBe('delay')
+    expect(cfg.pace_mode).toBe('hold')
     expect(cfg.poll_seconds).toBe(2)
   })
 

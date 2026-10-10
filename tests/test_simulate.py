@@ -33,23 +33,23 @@ class SimulatorTest(unittest.TestCase):
             self.assertLessEqual(rep["windows"]["seven_day"]["peak_pct"], 90 + slack * sc.cost_7d, policy)
 
     def test_priority_policy_serves_high_sessions_first_in_a_burst(self):
-        rep = run("burst", "priority", days=2, pace_max_delay_seconds=120)
+        rep = run("burst", "priority", days=2, pace_mode="delay", pace_max_delay_seconds=120)
         p = rep["priorities"]
         self.assertGreater(p["high"]["got_per_hour"], p["normal"]["got_per_hour"])
         self.assertGreater(p["normal"]["got_per_hour"], p["low"]["got_per_hour"])
         self.assertLess(p["high"]["wait_p95_s"], p["low"]["wait_p95_s"])
-        flat = run("burst", "pace", days=2, pace_max_delay_seconds=120)["priorities"]
+        flat = run("burst", "pace", days=2, pace_mode="delay", pace_max_delay_seconds=120)["priorities"]
         self.assertEqual(flat["high"]["wait_p95_s"], flat["low"]["wait_p95_s"])
 
     def test_a_lone_low_session_borrows_and_is_paced_like_a_high_one(self):
         lone = sim.Scenario("lone", ("low",), 0.0, 1, {"low": 1}, {p: sim.STEADY for p in g.PRIORITIES}, 0.1, 0.009)
-        rep = sim.Simulation(lone, "priority", 1.0, 10.0, 1).run()
+        rep = sim.Simulation(lone, "priority", 1.0, 10.0, 1, g.parse_config({"pace_mode": "delay"})).run()
         self.assertGreaterEqual(rep["priorities"]["low"]["lift_mean"], 1.9)
         self.assertLessEqual(rep["priorities"]["low"]["wait_p95_s"], 30.0)
 
     def test_hold_mode_keeps_the_week_on_the_line_without_a_threshold_hold(self):
-        rep = run("burst", "priority", days=2, pace_mode="hold")
-        delay = run("burst", "priority", days=2)
+        rep = run("burst", "priority", days=2)
+        delay = run("burst", "priority", days=2, pace_mode="delay")
         self.assertLess(rep["windows"]["seven_day"]["end_pct"], 90)
         self.assertLess(rep["windows"]["held_h"], delay["windows"]["held_h"])
         self.assertGreater(rep["priorities"]["low"]["paced_h"], delay["priorities"]["low"]["paced_h"])

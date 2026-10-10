@@ -39,7 +39,7 @@ class CodexFixture(unittest.TestCase):
                     "UG_CODEX_SESSIONS": str(self.codex / "sessions"), "UG_CODEX_HOME": str(self.codex),
                     "NO_COLOR": "1"}
         (self.dir / "config.json").write_text(json.dumps({
-            "poll_seconds": 0.1, "max_stall_seconds": 30, "pace_seconds_per_pct": 0.1, "pace_max_delay_seconds": 1.5}))
+            "poll_seconds": 0.1, "pace_mode": "delay", "pace_seconds_per_pct": 0.1, "pace_max_delay_seconds": 1.5}))
         self.transcript = self.codex / "sessions" / "2026" / "10" / "06" / "rollout.jsonl"
         # In-process guardlib calls must see the same redirected paths as the
         # subprocesses, or they would read and WRITE the real ~/.codex.
@@ -91,18 +91,23 @@ class CodexHookTest(CodexFixture):
         self.assertIn("5h window at 70%", ctx)
         self.assertNotIn("deny", proc.stdout)
 
-    def test_guard_hook_holds_codex_at_the_threshold_and_denies_past_the_budget(self):
-        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "max_stall_seconds": 0.5}))
-        transcript(self.transcript, seven_pct=99.0)
+    def test_guard_hook_holds_codex_at_the_threshold_until_the_reset(self):
+        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1}))
+        now = time.time()
+        limits = {"limit_id": "codex", "primary": {"used_percent": 99.0, "window_minutes": 10080, "resets_at": int(now + 5 * 86400)},
+                  "secondary": {"used_percent": 99.0, "window_minutes": 300, "resets_at": int(now + 2)}}
+        lines = [json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {}, "rate_limits": limits}})]
+        self.transcript.parent.mkdir(parents=True, exist_ok=True)
+        self.transcript.write_text("\n".join(lines) + "\n")
+        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "threshold_7d": 100}))
         proc, took = self.invoke(HOOK, self.payload("PreToolUse", tool_name="Bash", tool_input={}), *PRE)
-        self.assertGreaterEqual(took, 0.4)
-        out = json.loads(proc.stdout)["hookSpecificOutput"]
-        self.assertEqual(out["permissionDecision"], "deny")
-        self.assertIn("Codex 7d at 99%", out["permissionDecisionReason"])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertGreaterEqual(took, 1.5)
+        self.assertNotIn("deny", proc.stdout)
         self.assertFalse((self.dir / "codex-blocked.json").exists())
 
     def test_codex_hold_marker_is_separate_from_claudes(self):
-        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "max_stall_seconds": 5}))
+        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1}))
         transcript(self.transcript, seven_pct=99.0)
         proc = subprocess.Popen([sys.executable, str(HOOK), *PRE], stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env)
@@ -133,7 +138,7 @@ class CodexHookTest(CodexFixture):
             self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def start_hold(self, seven_pct=99.0, **cfg):
-        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "max_stall_seconds": 30, **cfg}))
+        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, **cfg}))
         transcript(self.transcript, seven_pct=seven_pct)
         proc = subprocess.Popen([sys.executable, str(HOOK), *PRE], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, env=self.env)
@@ -184,7 +189,7 @@ class CodexHookTest(CodexFixture):
         self.assertEqual(out, "")
 
     def test_hold_mode_releases_when_fresh_usage_is_back_on_pace(self):
-        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "pace_mode": "hold", "max_stall_seconds": 30}))
+        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "pace_mode": "hold"}))
         transcript(self.transcript, seven_pct=12.0, five_pct=70.0)
         proc = subprocess.Popen([sys.executable, str(HOOK), *PRE], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, env=self.env)

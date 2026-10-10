@@ -10,7 +10,6 @@ export type Config = {
   threshold_5h: number
   threshold_7d: number
   threshold_7d_release_hours: number
-  max_stall_seconds: number
   poll_seconds: number
   stale_after_seconds: number
   pace_enabled: boolean
@@ -81,7 +80,7 @@ export function parseConfig(stored: unknown): Config {
       } else if (typeof value === typeof current) cfg[key] = value
     }
   }
-  if (cfg['pace_mode'] !== 'delay' && cfg['pace_mode'] !== 'hold') cfg['pace_mode'] = 'delay'
+  if (cfg['pace_mode'] !== 'delay' && cfg['pace_mode'] !== 'hold') cfg['pace_mode'] = 'hold'
   return cfg as Config
 }
 

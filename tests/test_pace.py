@@ -97,7 +97,7 @@ class PaceMathTest(unittest.TestCase):
 
     def test_unknown_pace_mode_in_config_falls_back_to_delay(self):
         (Path(self.tmp.name) / "config.json").write_text(json.dumps({"pace_mode": "sideways"}))
-        self.assertEqual(g.load_config()["pace_mode"], "delay")
+        self.assertEqual(g.load_config()["pace_mode"], "hold")
 
     def test_a_value_of_the_wrong_type_is_left_at_the_default(self):
         (Path(self.tmp.name) / "config.json").write_text(json.dumps({"threshold_5h": "80", "enabled": 0, "poll_seconds": 2}))

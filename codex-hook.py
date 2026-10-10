@@ -12,8 +12,10 @@ sessions have no priority: they run under the account terms.
 
 The hold blocks this process rather than denying: a denial tells the model "no"
 and it carries on burning tokens; a blocked hook stalls the loop until the
-window rolls over. Every tick re-reads config and cache, so `ug off`, `ug
-release` and a raised threshold take effect within one poll.
+window rolls over, or until the pace line has caught up. Nothing is ever
+denied; the hook's timeout in hooks.json covers a full week. Every tick
+re-reads config and cache, so `ug off`, `ug release` and a raised threshold
+take effect within one poll.
 """
 from __future__ import annotations
 
@@ -37,12 +39,6 @@ def allow(context=None):
     clear_marker()
     if context:
         emit("PreToolUse", additionalContext=context)
-    sys.exit(0)
-
-
-def deny(reason):
-    clear_marker()
-    emit("PreToolUse", permissionDecision="deny", permissionDecisionReason=reason)
     sys.exit(0)
 
 
@@ -100,11 +96,11 @@ def brief():
     return 0
 
 
-def timing(cfg, start):
+def poll_seconds(cfg) -> float:
     try:
-        return start + float(cfg["max_stall_seconds"]), max(0.05, float(cfg["poll_seconds"]))
+        return max(0.05, float(cfg["poll_seconds"]))
     except (TypeError, ValueError):
-        return start + g.DEFAULTS["max_stall_seconds"], g.DEFAULTS["poll_seconds"]
+        return float(g.DEFAULTS["poll_seconds"])
 
 
 def guard():
@@ -125,8 +121,8 @@ def guard():
         pace(cfg, cache, now)
 
     start = now
-    deadline, poll = timing(cfg, start)
-    while True:
+    poll = poll_seconds(cfg)
+    while True:  # until the window resets: no budget, nothing denied
         now = time.time()
         cfg = g.load_config()
         if not cfg["enabled"] or released_since(start):
@@ -139,14 +135,7 @@ def guard():
             allow()  # threshold raised, usage dropped, or every window has reset
         worst = max(current, key=lambda v: v.resets_at)
         write_marker("+".join(v.label for v in current), worst.resets_at, worst.pct)
-        if now >= deadline:
-            labels = ", ".join(f"{v.label} at {v.pct:.0f}%" for v in current)
-            clock = time.strftime("%Y-%m-%d %H:%M", time.localtime(worst.resets_at))
-            deny(f"Usage guard: Codex {labels} (threshold {worst.threshold:.0f}%). "
-                 f"Held for {g.fmt_duration(now - start)} and the window does not reset "
-                 f"until {clock}, which exceeds the configured stall budget. "
-                 f"Stop and wait, or run `ug off` to disable the guard.")
-        time.sleep(min(poll, max(0.05, deadline - now), max(0.05, worst.resets_at - now)))
+        time.sleep(min(poll, max(0.05, worst.resets_at - now)))
 
 
 def pace_context(pace_list, cfg, waited):
@@ -167,12 +156,12 @@ def pace_context(pace_list, cfg, waited):
 
 def pace(cfg, cache, now):
     """Delay or hold this call while usage runs ahead of a pace line, then allow it."""
-    current = g.paces(cache, cfg, now)
+    current = g.paces(cache, cfg, now, g.ACCOUNT_TERMS, g.profile_of(cfg))
     if not any(p.active for p in current):
         allow()
     entered = current  # what engaged pacing, for the context the model gets afterwards
     start = now
-    deadline, poll = timing(cfg, start)
+    poll = poll_seconds(cfg)
 
     if cfg["pace_mode"] == "delay":
         until = start + g.pace_delay(current)
@@ -183,7 +172,7 @@ def pace(cfg, cache, now):
             time.sleep(min(poll, max(0.05, until - time.time())))
         allow(pace_context(current, cfg, time.time() - start))
 
-    while True:  # hold mode: wait until no window is pacing, bounded by the stall budget
+    while True:  # hold mode: wait until no window is pacing
         now = time.time()
         cfg = g.load_config()
         if not cfg["enabled"] or not cfg["pace_enabled"] or released_since(start):
@@ -191,13 +180,13 @@ def pace(cfg, cache, now):
         cache = read_cache(cfg, now)
         if g.is_stale(cache, cfg, now):
             allow()
-        current = g.paces(cache, cfg, now)
+        current = g.paces(cache, cfg, now, g.ACCOUNT_TERMS, g.profile_of(cfg))
         active = [p for p in current if p.active]
-        if not active or now >= deadline:
+        if not active:
             allow(pace_context(entered, cfg, now - start))
         worst = max(active, key=lambda p: p.catchup_at)
         write_marker("pace " + "+".join(p.label for p in active), worst.catchup_at, worst.pct)
-        time.sleep(min(poll, max(0.05, deadline - now), max(0.05, worst.catchup_at - now)))
+        time.sleep(min(poll, max(0.05, worst.catchup_at - now)))
 
 
 def main(argv):
