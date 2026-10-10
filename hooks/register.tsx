@@ -31,6 +31,7 @@ import {
   type Usage,
   WINDOWS,
   fmtClock,
+  fmtWhen,
   fresher,
   fmtDuration,
   idleAbove,
@@ -636,6 +637,22 @@ export const register: Register = (on, options) => {
     const state = stateGlyph(view)
     const near = view === null ? undefined : nearest(view)
     const isPacing = pacing !== null && pacing.delaySeconds > 0
+    if (e.surface === 'desktop') {
+      // The desktop gives the footer a narrow slot and cuts the rest, so only the
+      // state, both percentages and the priority; the band above the prompt has the detail.
+      const short = view === null || view.windows.length === 0
+        ? 'no data'
+        : view.windows.map(w => `${sup(w.label)}${Math.round(w.pct)}%${w.ahead >= 0.5 ? `▴${Math.round(w.ahead)}` : ''}`).join(' ')
+      return (
+        <Box flexDirection="row" gap={1}>
+          {e.props.modes.length > 0 && <Text dimColor>{e.props.modes.join(' & ')}</Text>}
+          <Text color={state.color} bold={state.bold}>{state.glyph}</Text>
+          <Text dimColor={view?.stale ?? true}>{short}</Text>
+          <Button key="priority-down" plain label="‹" onPress={() => void stepPriority($, -1)} />
+          <Button key="priority-up" plain label={`${liftGlyph(priority, view?.lift ?? 0).trimEnd()} ›`} onPress={() => void stepPriority($, 1)} />
+        </Box>
+      )
+    }
     return (
       <Box flexDirection="row" gap={2}>
         {e.props.modes.length > 0 && <Text dimColor>{e.props.modes.join(' & ')}</Text>}
@@ -694,6 +711,54 @@ export const register: Register = (on, options) => {
           <Text>{liftGlyph(priority, view?.lift ?? 0)}</Text>
           <Button key="priority-up" plain label="›" onPress={() => void stepPriority($, 1)} />
         </Box>
+      </Box>
+    )
+  })
+
+  // The desktop's band above the prompt: what the terminal footer packs into
+  // glyphs, one row per window in words. Other surfaces keep the footer alone.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.surface !== 'desktop' || e.props.hasSurvey) return next(e)
+    const view = await read($, viewAtom)
+    if (view === null || view.windows.length === 0) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const now = (await $.clock.now()) / 1000
+    const hold = view.hold
+    const isPacing = hold === null && view.pacing !== null && view.pacing.delaySeconds > 0
+    return (
+      <Box flexDirection="column">
+        {view.windows.map(w => (
+          <Box key={`window-${w.label}`} flexDirection="row" gap={1}>
+            <Text bold>{w.label}</Text>
+            <Text color={view.stale ? undefined : pctColor(w.pct, w.holdAt)} dimColor={view.stale} bold>
+              {Math.round(w.pct)}% used
+            </Text>
+            {w.ahead >= 0.5 && (
+              <Text color={w.pacing ? 'warning' : undefined} dimColor={!w.pacing}>{Math.round(w.ahead)} over the pace line</Text>
+            )}
+            <Text dimColor>
+              · resets in {fmtDuration(w.resetsIn)} ({fmtWhen(now + w.resetsIn, now)}), {w.elapsedPct}% of the window gone
+            </Text>
+            <Text dimColor>
+              · pacing from {Math.round(w.paceAt)}%{w.etaPaceSeconds === undefined ? '' : ` in ~${fmtDuration(w.etaPaceSeconds)}`},
+              hold at {Math.round(w.holdAt)}%{w.etaHoldSeconds === undefined ? '' : ` in ~${fmtDuration(w.etaHoldSeconds)}`}
+            </Text>
+          </Box>
+        ))}
+        {hold !== null && (
+          <Text key="hold" color={hold.kind === 'pace' ? 'warning' : 'error'} bold>
+            {hold.kind === 'pace' ? '◔ waiting for the pace line' : '⊘ held at the limit'} on {hold.label}: resumes in {fmtDuration(hold.until - now)} ({fmtWhen(hold.until, now)})
+          </Text>
+        )}
+        {isPacing && view.pacing !== null && (
+          <Text key="pacing" color="warning" bold>
+            ◔ pacing {Math.round(view.pacing.delaySeconds)}s per tool call, back on pace in {fmtDuration(view.pacing.backIn)}
+          </Text>
+        )}
+        {view.stale && <Text key="stale" dimColor>as of {fmtDuration(view.ageSeconds)} ago</Text>}
+        {view.codex.length > 0 && (
+          <Text key="codex" dimColor>codex {view.codex.map(w => `${w.label} ${Math.round(w.pct)}%`).join(' · ')}</Text>
+        )}
       </Box>
     )
   })

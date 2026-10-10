@@ -315,6 +315,15 @@ export const fmtClock = (epochSeconds: number): string => {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+/** `20:29` within the next 20 hours, `Mon 21:00` beyond. */
+export const fmtWhen = (epochSeconds: number, nowSeconds: number): string => {
+  const clock = fmtClock(epochSeconds)
+  if (epochSeconds - nowSeconds < 20 * 3600) return clock
+  return `${WEEKDAYS[new Date(epochSeconds * 1000).getDay()]} ${clock}`
+}
+
 // --- the shapes on disk and the engine's, as plain data ---
 
 export const num = (value: unknown): number | undefined =>

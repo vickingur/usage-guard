@@ -321,11 +321,11 @@ describe('priority: command and band', () => {
     expect((await run($, '')).text).toContain('[usage] claude 5h 70% (+32 over pace line)')
   })
 
-  test('the footer shows the windows and ‹ › step the priority on each surface', async ($, on) => {
+  test('the terminal footer shows the windows and ‹ › step the priority', async ($, on) => {
     const w = world(on)
     config(w)
     await start($, w, fiveHour(w, 70))
-    for (const surface of ['terminal', 'desktop'] as const) {
+    for (const surface of ['terminal'] as const) {
       const ui = await $.ui.mount({ plugin: 'usage-guard', surface, component: 'SessionMode', props: { modes: ['focus'] } })
       expect(await ui.find({ type: 'Text', text: /70%/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /▍40% 3h00m/ })).toBeDefined()
@@ -343,6 +343,46 @@ describe('priority: command and band', () => {
       await run($, 'priority normal')
       await ui.unmount()
     }
+  })
+})
+
+describe('the desktop', () => {
+  test('the footer is short and the priority is the button label', async ($, on) => {
+    const w = world(on)
+    config(w)
+    await start($, w, fiveHour(w, 70))
+    const ui = await $.ui.mount({ plugin: 'usage-guard', surface: 'desktop', component: 'SessionMode', props: { modes: [] } })
+    expect((await ui.find({ type: 'Text', text: /%/ }))?.text).toBe('⁵ʰ70%▴32')
+    expect((await ui.find({ key: 'priority-up' }))?.props?.label).toBe('◇ normal as △ ›')
+    await ui.press({ key: 'priority-up' })
+    expect((await ui.find({ key: 'priority-up' }))?.props?.label).toBe('△ high ›')
+    await ui.press({ key: 'priority-down' })
+    await ui.press({ key: 'priority-down' })
+    expect((w.read('sessions/me.json') as { priority: string }).priority).toBe('low')
+    expect(await ui.find({ type: 'Text', text: /resets/ })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('the band above the prompt spells each window out, and the terminal draws none', async ($, on) => {
+    on('ui.render', ($, e) => $.ui.resolve(e).Box({})) // the engine's own band beneath: an empty box
+    const w = world(on)
+    config(w)
+    await start($, w, fiveHour(w, 70))
+    const props = { hasSurvey: false, isWorking: false, maxRows: 12, bodyColumns: 120, scroll: { offset: 0, bodyRows: 12 }, view: {} }
+    const band = { component: 'AbovePrompt', props } as const
+    const ui = await $.ui.mount({ plugin: 'usage-guard', surface: 'desktop', ...band })
+    expect(await ui.find({ type: 'Text', text: '70% used' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '32 over the pace line' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /resets in 3h00m \(\d\d:\d\d\), 40% of the window gone/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /pacing from 58%, hold at 95%/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /◔ pacing 30s per tool call, back on pace in/ })).toBeDefined()
+    await ui.unmount()
+    const survey = await $.ui.mount({ plugin: 'usage-guard', surface: 'desktop', component: 'AbovePrompt', props: { ...props, hasSurvey: true } })
+    expect(await survey.find({ type: 'Text', text: /used/ })).toBe(undefined)
+    await survey.unmount()
+    const terminal = await $.ui.mount({ plugin: 'usage-guard', surface: 'terminal', ...band })
+    expect(await terminal.find({ type: 'Text', text: /used/ })).toBe(undefined)
+    await terminal.unmount()
   })
 })
 
@@ -382,7 +422,7 @@ describe('prompt.submit and session.measure', () => {
     const entered = await $.prompt.submit({ text: 'hi', wait: false, origin: { kind: 'composer' } })
     expect(entered.context?.[0]).toContain('pacing starts at 39% on 5h (about 3h2')
     expect(entered.context?.[0]).toContain('at the current rate), hold at 95% (about 3h0')
-    const ui = await $.ui.mount({ plugin: 'usage-guard', surface: 'desktop', component: 'SessionMode', props: { modes: [] } })
+    const ui = await $.ui.mount({ plugin: 'usage-guard', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
     expect(await ui.find({ type: 'Text', text: /◔⁷ᵈ@39%|◔⁵ʰ@39%~3h2\dm/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /⊘@95%~3h0\dm/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /▎20% 4h00m/ })).toBeDefined()
