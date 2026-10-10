@@ -68,7 +68,7 @@ labels, on the terminal and in the desktop app:
 The `[usage]` line the model reads says the same in words, with the reset
 times and the block and unblock points. `ug sessions` uses the same marks.
 `/ug priority high` sets the priority by name, `/ug priority` cycles, `/ug`
-prints the position in words.
+prints the position in words, `/ug legend` explains the footer.
 
 A session starts at the plugin option `priority` (`/config`, default
 `normal`), or at `UG_PRIORITY` from the environment when set:
