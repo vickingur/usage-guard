@@ -11,9 +11,10 @@ For Codex it is a pair of command hooks. A small Python CLI, `ug`, drives both.
 
 ## What it does
 
-- **Threshold hold.** A window at or over its threshold (5h at 95%, 7d at 90%
-  by default) stalls every tool call until it resets, or until `ug release`,
-  `ug off`, or a raised threshold. The model burns nothing while stalled.
+- **Threshold hold.** A window at or over its hold level (5h at 95%, 7d at
+  90%, the weekly level climbing to 100% over the last day) stalls every tool
+  call until it resets, or until `ug release`, `ug off`, or a raised
+  threshold. The model burns nothing while stalled.
 - **Pacing.** Before the threshold, a window running ahead of its *pace line*
   by more than a margin delays each tool call in proportion, and the model is
   told why and advised to take fewer, larger steps.
@@ -190,10 +191,12 @@ A hook has ten seconds of its own time per dispatch, but time spent inside an
 engine call is free. The guard therefore waits on the host (`sleep`, present on
 every macOS and Linux) in chunks of `poll_seconds`, re-reading config, usage and
 `state.json` between chunks, so every escape hatch takes effect within one
-poll. `max_stall_seconds` (6h) caps a hold; past it the call is denied with the
-reset time. Should the hook itself be lost mid-hold, its fallback denies the
-call rather than letting it through; a fault while merely pacing lets the call
-run.
+poll. A threshold hold lasts until the window resets, however far away that
+is: Esc, `ug release` and `ug off` are the ways out, and nothing is denied.
+Should the hook itself be lost mid-hold, its fallback refuses the call rather
+than letting it through; a fault while merely pacing lets the call run. (The
+Codex command hook has a timeout, so there a hold longer than
+`max_stall_seconds` ends in a deny that names the reset.)
 
 Overhead when nothing is ahead: a few file reads per tool call, in-process. The
 registry is re-read at most every five seconds.
@@ -226,8 +229,9 @@ Inside a session: `/ug`, `/ug priority`, `/ug priority low|normal|high`.
 |---|---|---|
 | `enabled` | `true` | Master switch |
 | `threshold_5h` | `95.0` | Hold when the 5h window reaches this percent |
-| `threshold_7d` | `90.0` | Hold when the 7d window reaches this percent |
-| `max_stall_seconds` | `21600` | Cap on a single hold before a deny (threshold) or an allow (pace) |
+| `threshold_7d` | `90.0` | Hold when the 7d window reaches this percent, until the last day |
+| `threshold_7d_release_hours` | `24` | Over the final hours of the week the hold level climbs from `threshold_7d` to 100%, linearly; 0 keeps it flat |
+| `max_stall_seconds` | `21600` | Cap on a pace hold (it ends in an allow) and on the Codex hook's threshold hold; the mod's threshold hold has no cap |
 | `poll_seconds` | `5` | How often a hold or delay re-checks for release |
 | `stale_after_seconds` | `600` | Usage older than this is ignored (fails open) |
 | `pace_enabled` | `true` | Pacing on or off |

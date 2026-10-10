@@ -43,6 +43,7 @@ class ParityTest(unittest.TestCase):
                     self.assertEqual(p.active, want["active"])
                     self.assertEqual(rnd(p.delay_seconds), want["delaySeconds"])
                     self.assertEqual(p.catchup_at - now if p.active else 0, want["catchup_in"])
+                    self.assertEqual(rnd(p.hold_at), want["holdAt"])
 
 
 if __name__ == "__main__":

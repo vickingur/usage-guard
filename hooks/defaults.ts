@@ -4,6 +4,7 @@ export const DEFAULTS = {
   "enabled": true,
   "threshold_5h": 95.0,
   "threshold_7d": 90.0,
+  "threshold_7d_release_hours": 24,
   "max_stall_seconds": 21600,
   "poll_seconds": 5,
   "stale_after_seconds": 600,

@@ -9,6 +9,7 @@ export type Config = {
   enabled: boolean
   threshold_5h: number
   threshold_7d: number
+  threshold_7d_release_hours: number
   max_stall_seconds: number
   poll_seconds: number
   stale_after_seconds: number
@@ -171,13 +172,28 @@ export function lineReaches(threshold: number, resetsAt: number, windowSeconds: 
 
 export type Violation = { label: string; pct: number; resetsAt: number; threshold: number }
 
-/** Windows at or over their threshold whose reset is still ahead. */
+/**
+ * The level the hold engages at right now. The weekly threshold keeps a
+ * reserve all week and releases it over the last `threshold_7d_release_hours`,
+ * climbing linearly to 100% at the reset: on the last day there is nothing
+ * left to save it for. The pace line still aims at the base threshold.
+ */
+export function holdLevel(cfg: Config, w: Window, resetsAt: number, now: number): number {
+  const base = cfg[w.thresholdKey]
+  if (w.key !== 'seven_day' || cfg.threshold_7d_release_hours <= 0) return base
+  const release = cfg.threshold_7d_release_hours * 3600
+  const remaining = Math.max(0, resetsAt - now)
+  if (remaining >= release) return base
+  return Math.min(100, base + (100 - base) * (1 - remaining / release))
+}
+
+/** Windows at or over their hold level whose reset is still ahead. */
 export function violations(usage: Usage, cfg: Config, now: number): Violation[] {
   const found: Violation[] = []
   for (const w of WINDOWS) {
     const r = usage.windows.find(one => one.key === w.key)
     if (r === undefined) continue
-    const threshold = cfg[w.thresholdKey]
+    const threshold = holdLevel(cfg, w, r.resetsAt, now)
     if (r.pct >= threshold && r.resetsAt > now) {
       found.push({ label: w.label, pct: r.pct, resetsAt: r.resetsAt, threshold })
     }
@@ -248,6 +264,7 @@ export type Pace = {
   delaySeconds: number
   catchupAt: number
   lineRate: number   // points per second the line climbs right now
+  holdAt: number     // the level the hold engages at right now (the threshold, released late in the week)
 }
 
 export const ACCOUNT_TERMS: Terms = { marginFactor: 1, delayFactor: 1, lift: 0 }
@@ -273,7 +290,7 @@ export function paces(usage: Usage, cfg: Config, now: number, t: Terms, profile:
       : 0
     const catchupAt = lineReaches(threshold, r.resetsAt, w.seconds, now, r.pct - margin, shape)
     const lineRate = lineRateAt(threshold, r.resetsAt, w.seconds, now, shape)
-    out.push({ key: w.key, label: w.label, pct: r.pct, resetsAt: r.resetsAt, threshold, line, ahead, margin, active, delaySeconds, catchupAt, lineRate })
+    out.push({ key: w.key, label: w.label, pct: r.pct, resetsAt: r.resetsAt, threshold, line, ahead, margin, active, delaySeconds, catchupAt, lineRate, holdAt: holdLevel(cfg, w, r.resetsAt, now) })
   }
   return out
 }
