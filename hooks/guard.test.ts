@@ -294,6 +294,20 @@ describe('prompt.submit and session.measure', () => {
     expect(entered.context?.[0]).toContain('Spend is running ahead')
   })
 
+  test('after a long idle the brief keeps the last figures and says how old they are', async ($, on) => {
+    const w = world(on, { priorityEnv: 'high' })
+    config(w)
+    await start($, w, fiveHour(w, 70))
+    await w.clock.advance(20 * 60 * 1000)
+    const entered = await $.prompt.submit({ text: 'hi', wait: false, origin: { kind: 'composer' } })
+    expect(entered.context?.[0]).toContain('[usage] claude 5h 70% (+26 over pace line) (as of 20m ago)')
+    expect(entered.context?.[0]).not.toContain('PACING')
+    const ui = await $.ui.mount({ plugin: 'usage-guard', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
+    expect(await ui.find({ type: 'Text', text: /~20m/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /stale/ })).toBe(undefined)
+    await ui.unmount()
+  })
+
   test('a measurement writes usage.json for the CLI and the other sessions', async ($, on) => {
     const w = world(on)
     config(w)

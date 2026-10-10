@@ -17,6 +17,7 @@ export type UsageGuardView = {
   pacing: { delaySeconds: number; backIn: number } | null
   lift: number
   stale: boolean
+  ageSeconds: number
   enabled: boolean
   paceEnabled: boolean
 }

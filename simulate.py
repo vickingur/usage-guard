@@ -129,9 +129,12 @@ class Session:
     wall_s: float = 0.0
     work_s: float = 0.0
     lift_sum: float = 0.0
+    track: dict = field(default_factory=dict)   # hour bucket -> {state: seconds}
 
 
 BLOCKED_TIME = {"pace": "paced_s", "hold": "held_s", "wall": "wall_s"}
+TRACK_STATES = ("work", "think", "pace", "hold", "wall")
+TRACK_BUCKET_S = 3600.0
 
 
 def poisson(rng: random.Random, lam: float) -> int:
@@ -227,7 +230,10 @@ class Simulation:
         dt, p = self.dt, s.profile
         if s.state == "work":
             s.work_s += dt
-        if t < s.blocked_until:
+        blocked = t < s.blocked_until
+        bucket = s.track.setdefault(int(t // TRACK_BUCKET_S), dict.fromkeys(TRACK_STATES, 0.0))
+        bucket[s.blocked_kind if blocked else s.state] += dt
+        if blocked:
             attr = BLOCKED_TIME[s.blocked_kind]
             setattr(s, attr, getattr(s, attr) + dt)
             return
@@ -326,6 +332,11 @@ class Simulation:
                 "wall_h": round(self.wall_steps * self.dt / H, 2),
             },
             "priorities": by_priority,
+            "sessions": [{
+                "id": s.id, "priority": s.priority, "born_h": round(s.born / H, 1),
+                "track": [[int(b), *[round(100 * v / TRACK_BUCKET_S) for v in bucket.values()]]
+                          for b, bucket in sorted(s.track.items())],
+            } for s in everyone],
             "timeline": [{"t_h": round(t / H, 1), "five_hour_pct": round(a, 1), "seven_day_pct": round(b, 1),
                           "seven_day_line_pct": None if line is None else round(line, 1)}
                          for t, a, b, line in self.samples],
