@@ -179,7 +179,8 @@ class UgTest(unittest.TestCase):
         bin_dir = self.dir / "bin"; bin_dir.mkdir()
         log = self.dir / "claude.log"
         fake = bin_dir / "claude"
-        fake.write_text(f"#!/bin/sh\necho \"$@\" >> {log}\n")
+        fake.write_text(f"#!/bin/sh\necho \"$@\" >> {log}\n"
+                        f"if [ \"$1 $2 $3\" = \"plugin marketplace list\" ]; then printf '  > usage-guard\\n    Source: Folder (/elsewhere/usage-guard)\\n'; fi\n")
         fake.chmod(0o755)
         settings = self.dir / "settings.json"
         settings.write_text(json.dumps({
@@ -193,9 +194,10 @@ class UgTest(unittest.TestCase):
                "HOME": str(self.dir)}
         proc = subprocess.run([sys.executable, str(UG), "install"], capture_output=True, text=True, env=env, timeout=30)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        calls = log.read_text().splitlines()
-        self.assertEqual(calls[0], f"plugin marketplace add {UG.parent}")
-        self.assertEqual(calls[1], "plugin install usage-guard@usage-guard")
+        calls = [c for c in log.read_text().splitlines() if c != "plugin marketplace list"]
+        self.assertEqual(calls[0], "plugin marketplace remove usage-guard")  # it was registered from another checkout
+        self.assertEqual(calls[1], f"plugin marketplace add {UG.parent}")
+        self.assertEqual(calls[2], "plugin install usage-guard@usage-guard")
         doc = json.loads(settings.read_text())
         self.assertNotIn("statusLine", doc)
         self.assertNotIn("UserPromptSubmit", doc["hooks"])
