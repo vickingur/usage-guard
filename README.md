@@ -242,7 +242,7 @@ Inside a session: `/ug`, `/ug priority`, `/ug priority low|normal|high`.
 | `stale_after_seconds` | `600` | Usage older than this is ignored (fails open) |
 | `pace_enabled` | `true` | Pacing on or off |
 | `pace_mode` | `"hold"` | `hold` (wait until back on pace) or `delay` (a capped slowdown per call) |
-| `pace_margin_5h` | `20.0` | Points ahead of the 5h pace line a high session may run |
+| `pace_margin_5h` | `10.0` | Points ahead of the 5h pace line a high session may run |
 | `pace_margin_7d` | `15.0` | Same for the weekly window |
 | `pace_min_used_pct` | `30.0` | Pacing never engages below this usage |
 | `pace_seconds_per_pct` | `5.0` | `delay` mode: delay per point over the margin |

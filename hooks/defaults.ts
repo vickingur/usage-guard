@@ -9,7 +9,7 @@ export const DEFAULTS = {
   "stale_after_seconds": 600,
   "pace_enabled": true,
   "pace_mode": "hold",
-  "pace_margin_5h": 20.0,
+  "pace_margin_5h": 10.0,
   "pace_margin_7d": 15.0,
   "pace_min_used_pct": 30.0,
   "pace_seconds_per_pct": 5.0,
