@@ -139,7 +139,7 @@ class CodexHookTest(CodexFixture):
             self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def start_hold(self, seven_pct=99.0, **cfg):
-        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, **cfg}))
+        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "pace_margin_5h": 20, **cfg}))
         transcript(self.transcript, seven_pct=seven_pct)
         proc = subprocess.Popen([sys.executable, str(HOOK), *PRE], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, env=self.env)
@@ -178,7 +178,7 @@ class CodexHookTest(CodexFixture):
         proc.kill(); proc.communicate()
 
     def test_switching_pacing_off_mid_delay_releases_at_once(self):
-        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "pace_max_delay_seconds": 20, "pace_seconds_per_pct": 2}))
+        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "pace_max_delay_seconds": 20, "pace_seconds_per_pct": 2, "pace_margin_5h": 20}))
         transcript(self.transcript, seven_pct=12.0, five_pct=70.0)
         proc = subprocess.Popen([sys.executable, str(HOOK), *PRE], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, env=self.env)
@@ -190,7 +190,7 @@ class CodexHookTest(CodexFixture):
         self.assertEqual(out, "")
 
     def test_hold_mode_releases_when_fresh_usage_is_back_on_pace(self):
-        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "pace_mode": "hold"}))
+        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "pace_mode": "hold", "pace_margin_5h": 20}))
         transcript(self.transcript, seven_pct=12.0, five_pct=70.0)
         proc = subprocess.Popen([sys.executable, str(HOOK), *PRE], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, env=self.env)

@@ -5,7 +5,7 @@
 export const CASES = [
   {
     "name": "2h into a 5h window at 70% under account terms: line 38, 12 over the margin",
-    "config": {},
+    "config": { "pace_margin_5h": 20.0 },
     "priority": "high",
     "idle": {},
     "now": 1000000,
@@ -38,7 +38,7 @@ export const CASES = [
   },
   {
     "name": "the same window for a normal session with a busy high session: half the margin, double the delay",
-    "config": {},
+    "config": { "pace_margin_5h": 20.0 },
     "priority": "normal",
     "idle": {
       "high": 10
@@ -73,7 +73,7 @@ export const CASES = [
   },
   {
     "name": "a normal session halfway through the borrow ramp has terms halfway to high's",
-    "config": {},
+    "config": { "pace_margin_5h": 20.0 },
     "priority": "normal",
     "idle": {
       "high": 360
@@ -108,7 +108,7 @@ export const CASES = [
   },
   {
     "name": "a low session alone on the machine borrows all the way up to high's terms",
-    "config": {},
+    "config": { "pace_margin_5h": 20.0 },
     "priority": "low",
     "idle": {},
     "now": 1000000,
@@ -141,7 +141,7 @@ export const CASES = [
   },
   {
     "name": "a low session stops at normal's terms while a high session is busy",
-    "config": {},
+    "config": { "pace_margin_5h": 20.0 },
     "priority": "low",
     "idle": {
       "high": 0
@@ -176,7 +176,7 @@ export const CASES = [
   },
   {
     "name": "a low session with a busy normal session above it keeps its own terms: no margin, 4x delay",
-    "config": {},
+    "config": { "pace_margin_5h": 20.0 },
     "priority": "low",
     "idle": {
       "normal": 30
@@ -211,7 +211,7 @@ export const CASES = [
   },
   {
     "name": "below pace_min_used_pct nothing paces however far ahead",
-    "config": {},
+    "config": { "pace_margin_5h": 20.0 },
     "priority": "low",
     "idle": {
       "normal": 0,
@@ -248,6 +248,7 @@ export const CASES = [
   {
     "name": "a weekly window within its margin is not pacing, the delay is small when just over",
     "config": {
+      "pace_margin_5h": 20.0,
       "pace_seconds_per_pct": 5.0
     },
     "priority": "high",
@@ -283,6 +284,7 @@ export const CASES = [
   {
     "name": "pacing off disengages every window",
     "config": {
+      "pace_margin_5h": 20.0,
       "pace_enabled": false
     },
     "priority": "low",
@@ -318,6 +320,7 @@ export const CASES = [
   {
     "name": "a step ramp (full <= after) lends nothing before `after` and everything from it",
     "config": {
+      "pace_margin_5h": 20.0,
       "borrow_after_seconds": 120,
       "borrow_full_seconds": 120
     },
@@ -356,6 +359,7 @@ export const CASES = [
   {
     "name": "a work-week profile: Monday 13:46, the line has climbed only the share of the week's weight so far",
     "config": {
+      "pace_margin_5h": 20.0,
       "pace_profile_days": [
         1,
         1,
@@ -425,6 +429,7 @@ export const CASES = [
   {
     "name": "the same profile on Saturday night: most of the week's weight has elapsed, so 80% used is below the line",
     "config": {
+      "pace_margin_5h": 20.0,
       "pace_profile_days": [
         1,
         1,
@@ -493,7 +498,7 @@ export const CASES = [
   },
   {
     "name": "half a day before the weekly reset the hold level has climbed halfway from 90 to 100",
-    "config": {},
+    "config": { "pace_margin_5h": 20.0 },
     "priority": "high",
     "idle": {},
     "now": 1000000,

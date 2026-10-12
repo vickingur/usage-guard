@@ -22,6 +22,7 @@ class PaceMathTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["UG_DIR"] = self.tmp.name
         self.cfg = g.load_config()
+        self.cfg["pace_margin_5h"] = 20.0  # the figures below are worked at a 20-point margin
         self.now = 1_800_000_000.0
 
     def tearDown(self):
@@ -107,7 +108,7 @@ class PaceMathTest(unittest.TestCase):
 
 class PriorityTermsTest(unittest.TestCase):
     def setUp(self):
-        self.cfg = g.parse_config({})
+        self.cfg = g.parse_config({"pace_margin_5h": 20.0})  # worked at a 20-point margin
         self.now = 1_800_000_000.0
 
     def test_high_runs_on_the_account_terms_whatever_is_around(self):
