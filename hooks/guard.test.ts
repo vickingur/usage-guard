@@ -83,7 +83,7 @@ const fiveHour = (w: World, pct: number, resetsIn = 3 * H): SessionRateLimit[] =
 ]
 
 const config = (w: World, extra: Record<string, unknown> = {}): void =>
-  w.write('config.json', { poll_seconds: 5, pace_mode: 'delay', ...extra })
+  w.write('config.json', { poll_seconds: 5, pace_mode: 'delay', pace_margin_5h: 20, ...extra }) // the figures are worked at a 20-point margin
 
 const start = async ($: Parameters<Parameters<typeof test>[1] extends (a: infer A, ...r: never[]) => unknown ? A : never>[0] extends never ? never : any, w: World, limits: SessionRateLimit[]) => {
   w.limits = limits
@@ -177,7 +177,7 @@ describe('tool.call: pacing', () => {
 describe('tool.call: hold mode (the default)', () => {
   test('a call 12 over the margin waits until the line has caught up, then runs with context', async ($, on) => {
     const w = world(on, { priorityEnv: 'high' })
-    w.write('config.json', { poll_seconds: 60 })
+    w.write('config.json', { poll_seconds: 60, pace_margin_5h: 20 })
     await start($, w, fiveHour(w, 70))
     const ran = await callBash($)
     expect(ran.deny).toBe(undefined)
@@ -189,7 +189,7 @@ describe('tool.call: hold mode (the default)', () => {
 
   test('a low session holds longer: its margin is nil, so the line must reach its usage', async ($, on) => {
     const w = world(on, { priorityEnv: 'low' })
-    w.write('config.json', { poll_seconds: 60 })
+    w.write('config.json', { poll_seconds: 60, pace_margin_5h: 20 })
     w.write('sessions/other.json', { id: 'other', priority: 'normal', cwd: '/o', started: 0, last_call: w.nowSeconds(), updated: w.nowSeconds(), hold: null, pacing_seconds: 0, lift: 0 })
     await start($, w, fiveHour(w, 70))
     await callBash($)
@@ -201,7 +201,7 @@ describe('tool.call: hold mode (the default)', () => {
 
   test('`ug release` ends a pace hold at once', async ($, on) => {
     const w = world(on, { priorityEnv: 'high' })
-    w.write('config.json', { poll_seconds: 5 })
+    w.write('config.json', { poll_seconds: 5, pace_margin_5h: 20 })
     await start($, w, fiveHour(w, 70))
     w.beforeSleep = count => {
       if (count === 3) w.write('state.json', { release_at: w.nowSeconds() + 1 })
