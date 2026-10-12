@@ -192,8 +192,8 @@ async function releasedSince($: EngineInterface, p: Paths, start: number): Promi
  * its own per dispatch and `$.clock.sleep` spends them, while a `$` call in
  * flight does not count. `sleep(1)` exists on every macOS and Linux.
  */
-async function hostSleep($: EngineInterface, seconds: number, signal: AbortSignal): Promise<void> {
-  const s = Math.min(Math.max(seconds, 0.05), 590)
+async function hostSleep($: EngineInterface, wait: number, signal: AbortSignal): Promise<void> {
+  const s = Math.min(Math.max(wait, 0.05), 590)
   if (signal.aborted) return
   await $.process.run(['sleep', s.toFixed(2)], { timeoutMs: Math.ceil(s * 1000) + 5000 })
 }
@@ -717,7 +717,7 @@ export const register: Register = (on, options) => {
 
   // The desktop's band above the prompt: one terse row per window. Other surfaces
   // keep the footer alone.
-  const eta = (seconds: number | undefined): string => (seconds === undefined ? '' : ` ~${fmtDuration(seconds)}`)
+  const eta = (left: number | undefined): string => (left === undefined ? '' : ` ~${fmtDuration(left)}`)
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.surface !== 'desktop' || e.props.hasSurvey) return next(e)
     const view = await read($, viewAtom)
