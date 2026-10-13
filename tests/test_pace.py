@@ -214,13 +214,13 @@ class CodexTest(unittest.TestCase):
 
     def test_report_carries_codex_windows_and_a_brief_line(self):
         self.write_log("r.jsonl", self.limits(12.0), mtime=self.now - 5)
-        rep = g.report(g.load_config(), self.now)
+        rep = g.report(self.now)
         self.assertEqual(rep["codex"]["windows"][0]["used_pct"], 12.0)
         self.assertIn("codex 7d 12%", rep["brief"])
         self.assertEqual(rep["claude"]["windows"], [])
 
     def test_brief_is_empty_when_nothing_is_known(self):
-        self.assertEqual(g.report(g.load_config(), self.now)["brief"], "")
+        self.assertEqual(g.report(self.now)["brief"], "")
 
     def test_report_lists_live_sessions_with_their_terms_and_holds(self):
         ug = Path(os.environ["UG_DIR"]); (ug / "sessions").mkdir(parents=True)
@@ -231,7 +231,7 @@ class CodexTest(unittest.TestCase):
             (ug / "sessions" / f"{sid}.json").write_text(json.dumps({
                 "id": sid, "priority": prio, "cwd": "/w", "started": 0, "last_call": last,
                 "updated": last, "hold": hold, "pacing_seconds": 0, "lift": 0}))
-        rep = g.report(g.load_config(), self.now)
+        rep = g.report(self.now)
         rows = {r["id"]: r for r in rep["claude"]["sessions"]}
         self.assertEqual(set(rows), {"aaa", "bbb"})  # `old` is past session_stale_seconds
         self.assertEqual(rows["aaa"]["delay_seconds"], 30.0)
@@ -244,11 +244,41 @@ class CodexTest(unittest.TestCase):
     def test_brief_flags_pacing_and_advises_fewer_steps(self):
         ug = Path(os.environ["UG_DIR"]); ug.mkdir()
         (ug / "usage.json").write_text(json.dumps(cache(self.now, five=(70, 3 * 3600))))
-        rep = g.report(g.load_config(), self.now)
+        rep = g.report(self.now)
         self.assertTrue(rep["claude"]["windows"][0]["pacing"])
         self.assertIn("PACING", rep["brief"])
         self.assertIn("fewer, larger steps", rep["brief"])
         self.assertIn("never a reason to stop", rep["brief"])
+
+    def test_report_carries_each_vendors_own_switches(self):
+        ug = Path(os.environ["UG_DIR"]); ug.mkdir(exist_ok=True)
+        (ug / "config.json").write_text(json.dumps({"pace_mode": "delay", "claude": {"enabled": False}}))
+        rep = g.report(self.now)
+        self.assertEqual(rep["guard"], {"enabled": True, "pace_enabled": True, "pace_mode": "delay"})
+        self.assertEqual(rep["claude"]["guard"], {"enabled": False, "pace_enabled": True, "pace_mode": "delay"})
+        self.assertEqual(rep["codex"]["guard"], {"enabled": True, "pace_enabled": True, "pace_mode": "delay"})
+
+    def test_brief_names_the_vendor_whose_guard_is_off_and_paces_only_the_one_on(self):
+        ug = Path(os.environ["UG_DIR"]); ug.mkdir(exist_ok=True)
+        (ug / "usage.json").write_text(json.dumps(cache(self.now, five=(70, 3 * 3600))))
+        (ug / "codex-usage.json").write_text(json.dumps(cache(self.now, five=(70, 3 * 3600))))
+        (ug / "config.json").write_text(json.dumps({"claude": {"enabled": False}, "codex": {"pace_enabled": False}}))
+        rep = g.report(self.now)
+        self.assertFalse(rep["claude"]["windows"][0]["pacing"])  # a guard that is off paces nothing
+        self.assertNotIn("PACING", rep["brief"])
+        self.assertTrue(rep["brief"].endswith(" · claude guard off · codex pacing off"), rep["brief"])
+        self.assertTrue(g.report(self.now, "codex")["brief"].endswith("(+32 over pace line) · pacing off"))
+        self.assertTrue(g.report(self.now, "claude")["brief"].endswith("(+32 over pace line) · guard off"))
+        (ug / "config.json").write_text(json.dumps({"enabled": False}))
+        self.assertTrue(g.report(self.now)["brief"].endswith("(+32 over pace line) · guard off"))  # both alike: said once
+
+    def test_the_codex_brief_advises_on_codex_pacing_alone(self):
+        ug = Path(os.environ["UG_DIR"]); ug.mkdir(exist_ok=True)
+        (ug / "usage.json").write_text(json.dumps(cache(self.now, five=(70, 3 * 3600))))
+        (ug / "codex-usage.json").write_text(json.dumps(cache(self.now, five=(10, 3 * 3600))))
+        self.assertIn("fewer, larger steps", g.report(self.now)["brief"])
+        self.assertIn("fewer, larger steps", g.report(self.now, "claude")["brief"])
+        self.assertNotIn("fewer, larger steps", g.report(self.now, "codex")["brief"])
 
 
 if __name__ == "__main__":

@@ -437,3 +437,60 @@ describe('prompt.submit and session.measure', () => {
     expect((w.read('usage.json') as { five_hour: { used_percentage: number } }).five_hour.used_percentage).toBe(33)
   })
 })
+
+describe('per-vendor switches: the mod reads config.json as Claude', () => {
+  const brief = async ($: any): Promise<string> =>
+    (await $.prompt.submit({ text: 'hi', wait: false, origin: { kind: 'composer' } })).context?.[0] ?? ''
+
+  test('`claude.enabled: false` lifts this guard: a call at the threshold runs, the brief says guard off', async ($, on) => {
+    const w = world(on)
+    config(w, { claude: { enabled: false } })
+    await start($, w, fiveHour(w, 96))
+    const ran = await callBash($)
+    expect(ran.deny).toBe(undefined)
+    expect(w.sleeps).toEqual([])
+    const line = await brief($)
+    expect(line).toContain('· guard off')
+    expect(line).not.toContain('PACING')
+  })
+
+  test('`codex.enabled: false` leaves Claude guarded', async ($, on) => {
+    const w = world(on)
+    config(w, { codex: { enabled: false } })
+    await start($, w, fiveHour(w, 96))
+    w.beforeSleep = count => {
+      if (count === 2) w.write('state.json', { release_at: w.nowSeconds() + 1 })
+    }
+    await callBash($)
+    expect(w.sleeps).toEqual([5, 5, 5])
+    expect(await brief($)).not.toContain('guard off')
+  })
+
+  test('`ug off claude` mid-hold ends the hold within one poll', async ($, on) => {
+    const w = world(on)
+    config(w)
+    await start($, w, fiveHour(w, 96))
+    w.beforeSleep = () => config(w, { claude: { enabled: false } })
+    const ran = await callBash($)
+    expect(ran.deny).toBe(undefined)
+    expect(w.sleeps.length).toBe(1)
+  })
+
+  test("Claude's own pace mode beats the shared one, and Codex's does not reach it", async ($, on) => {
+    const w = world(on, { priorityEnv: 'high' })
+    w.write('config.json', { poll_seconds: 60, pace_margin_5h: 20, pace_mode: 'delay', claude: { pace_mode: 'hold' } })
+    await start($, w, fiveHour(w, 70))
+    const held = await callBash($)
+    expect(w.sleeps.length).toBe(39) // as in hold mode above
+    expect(held.context?.[0]).toContain('this call was held 37m')
+  })
+
+  test("Codex's pace mode alone leaves Claude on the shared one", async ($, on) => {
+    const w = world(on, { priorityEnv: 'high' })
+    config(w, { codex: { pace_mode: 'hold' } })
+    await start($, w, fiveHour(w, 70))
+    const ran = await callBash($)
+    expect(total(w.sleeps)).toBe(30)
+    expect(ran.context?.[0]).toContain('delayed 30s')
+  })
+})

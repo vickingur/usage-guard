@@ -1,7 +1,7 @@
 // The usage guard as a Claude Code mod.
 //
 // `tool.call` is the guard: a window at or over its hold level stalls the call
-// until it resets (or `ug release`, `ug off`, a raised threshold); a window
+// until it resets (or `ug release`, `ug off [claude]`, a raised threshold); a window
 // ahead of its pace line by more than this session's margin holds the call
 // until the line has caught up (or, in delay mode, slows it by a capped delay).
 // Nothing is ever denied.
@@ -73,7 +73,7 @@ const viewAtom = atom({ plugin: 'usage-guard', key: 'view' } as const, null)
 // node-local directory (UG_DIR, else ~/.claude/usage-guard) that the `ug` CLI
 // and the Codex hooks share:
 //
-//   config.json          settings (ug writes, the mod reads)
+//   config.json          settings (ug writes, the mod reads, with its `claude` overrides)
 //   usage.json           the account's Claude windows, as this mod last saw them
 //   codex-usage.json     Codex's windows, written by the Codex hooks
 //   state.json           `release_at`, written by `ug release`
@@ -127,8 +127,9 @@ async function readJson($: EngineInterface, path: string): Promise<unknown> {
 const writeJson = ($: EngineInterface, path: string, value: unknown): Promise<void> =>
   $.fs.write(path, `${JSON.stringify(value, null, 2)}\n`)
 
+/** Claude's own settings: the shared ones with config.json's `claude` overrides over them. */
 const loadConfig = async ($: EngineInterface, p: Paths): Promise<Config> =>
-  parseConfig(await readJson($, p.config))
+  parseConfig(await readJson($, p.config), 'claude')
 
 // --- usage -------------------------------------------------------------------
 

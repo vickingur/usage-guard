@@ -165,6 +165,53 @@ class CodexHookTest(CodexFixture):
         self.invoke(UG, "", "off")
         self.assertNotIn("deny", self.finish(proc))
 
+    def test_codex_only_off_lets_codex_through_at_the_threshold(self):
+        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "codex": {"enabled": False}}))
+        transcript(self.transcript, seven_pct=99.0)
+        proc, took = self.invoke(HOOK, self.payload("PreToolUse", tool_name="Bash", tool_input={}), *PRE)
+        self.assertEqual((proc.returncode, proc.stdout), (0, ""))
+        self.assertLess(took, 1.0)
+        self.assertTrue(g.load_config("claude")["enabled"])
+
+    def test_claude_only_off_leaves_codex_held(self):
+        proc = self.start_hold(claude={"enabled": False})
+        self.assertTrue((self.dir / "codex-blocked.json").exists())
+        self.invoke(UG, "", "release")
+        self.finish(proc)
+
+    def test_ug_off_codex_ends_a_codex_hold(self):
+        proc = self.start_hold()
+        self.assertEqual(self.invoke(UG, "", "off", "codex")[0].returncode, 0)
+        self.assertNotIn("deny", self.finish(proc))
+
+    def test_ug_off_claude_does_not_end_a_codex_hold(self):
+        proc = self.start_hold()
+        self.invoke(UG, "", "off", "claude")
+        time.sleep(0.5)
+        self.assertIsNone(proc.poll(), "a Claude-only switch must not release Codex")
+        self.invoke(UG, "", "release")
+        self.finish(proc)
+
+    def test_codex_pace_mode_override_beats_the_shared_one(self):
+        # shared hold would wait ~40 minutes for the line; Codex's own delay mode waits ~1.2s
+        (self.dir / "config.json").write_text(json.dumps({
+            "poll_seconds": 0.1, "pace_mode": "hold", "pace_seconds_per_pct": 0.1, "pace_max_delay_seconds": 1.5,
+            "pace_margin_5h": 20, "codex": {"pace_mode": "delay"}}))
+        transcript(self.transcript, seven_pct=12.0, five_pct=70.0)
+        proc, took = self.invoke(HOOK, self.payload("PreToolUse", tool_name="Bash", tool_input={}), *PRE)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertGreaterEqual(took, 1.1)
+        self.assertIn("each tool call is being delayed", self.context(proc))
+
+    def test_brief_reflects_codex_own_switch(self):
+        (self.dir / "config.json").write_text(json.dumps({"claude": {"enabled": False}}))
+        transcript(self.transcript, seven_pct=12.0)
+        proc, _ = self.invoke(HOOK, self.payload("UserPromptSubmit", prompt="hi"), *BRIEF)
+        self.assertNotIn("guard off", self.context(proc))
+        (self.dir / "config.json").write_text(json.dumps({"codex": {"enabled": False}}))
+        proc, _ = self.invoke(HOOK, self.payload("UserPromptSubmit", prompt="hi"), *BRIEF)
+        self.assertTrue(self.context(proc).endswith("codex 7d 12% · guard off"), self.context(proc))
+
     def test_raising_the_threshold_above_usage_ends_a_codex_hold(self):
         proc = self.start_hold(seven_pct=92.0)
         self.invoke(UG, "", "threshold", "7d", "99")

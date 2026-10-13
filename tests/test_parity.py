@@ -1,7 +1,7 @@
 """The Python pace math answers exactly what hooks/pace.ts answers.
 
-Both sides read hooks/pace-cases.ts and hooks/defaults.ts; hooks/pace.test.ts
-runs the same cases under `claude plugin test`.
+Both sides read hooks/pace-cases.ts, hooks/config-cases.ts and hooks/defaults.ts;
+hooks/pace.test.ts runs the same cases under `claude plugin test`.
 """
 import json, sys, unittest
 from pathlib import Path
@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 import guardlib as g  # noqa: E402
 
 CASES = json.loads((ROOT / "hooks" / "pace-cases.ts").read_text().split("export const CASES =", 1)[1])
+CONFIG_CASES = json.loads((ROOT / "hooks" / "config-cases.ts").read_text().split("export const CONFIG_CASES =", 1)[1])
 
 
 def rnd(x):
@@ -44,6 +45,13 @@ class ParityTest(unittest.TestCase):
                     self.assertEqual(rnd(p.delay_seconds), want["delaySeconds"])
                     self.assertEqual(p.catchup_at - now if p.active else 0, want["catchup_in"])
                     self.assertEqual(rnd(p.hold_at), want["holdAt"])
+
+    def test_every_config_case_layers_the_same_in_python(self):
+        for case in CONFIG_CASES:
+            for reader, want in case["expect"].items():
+                with self.subTest(case["name"], reader=reader):
+                    got = g.parse_config(case["stored"], None if reader == "shared" else reader)
+                    self.assertEqual(got, {**g.DEFAULTS, **want})
 
 
 if __name__ == "__main__":

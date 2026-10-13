@@ -9,7 +9,8 @@ class UgTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
-        self.env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "UG_DIR": str(self.dir), "NO_COLOR": "1"}
+        self.env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "UG_DIR": str(self.dir), "NO_COLOR": "1",
+                    "UG_CODEX_SESSIONS": str(self.dir / "codex-sessions")}
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -37,6 +38,81 @@ class UgTest(unittest.TestCase):
         self.ug("off")
         self.assertEqual(self.ug("on").returncode, 0)
         self.assertTrue(self.config()["enabled"])
+
+    # --- per vendor -----------------------------------------------------------
+
+    def test_off_for_one_vendor_leaves_the_other_on(self):
+        proc = self.ug("off", "claude")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("off for claude", proc.stdout)
+        self.assertEqual(self.config(), {"claude": {"enabled": False}})
+        self.assertFalse(json.loads(self.ug("config", "claude").stdout)["enabled"])
+        self.assertTrue(json.loads(self.ug("config", "codex").stdout)["enabled"])
+
+    def test_on_without_a_vendor_means_on_everywhere(self):
+        self.ug("off", "claude")
+        self.ug("off", "codex")
+        self.ug("pace", "mode", "delay", "codex")
+        self.assertEqual(self.ug("on").returncode, 0)
+        self.assertEqual(self.config(), {"codex": {"pace_mode": "delay"}, "enabled": True})
+
+    def test_off_without_a_vendor_turns_both_off_over_their_overrides(self):
+        self.ug("on", "codex")  # the shared value: no override is kept
+        self.ug("off")
+        status = json.loads(self.ug("status", "--json").stdout)
+        self.assertFalse(status["claude"]["guard"]["enabled"])
+        self.assertFalse(status["codex"]["guard"]["enabled"])
+
+    def test_pace_switches_and_mode_take_a_vendor(self):
+        self.assertEqual(self.ug("pace", "off", "codex").returncode, 0)
+        self.assertEqual(self.ug("pace", "mode", "delay", "codex").returncode, 0)
+        self.assertEqual(self.ug("pace", "mode", "hold", "claude").returncode, 0)  # already the shared mode: no override
+        self.assertEqual(self.ug("pace", "margin", "5h", "25", "claude").returncode, 0)
+        self.assertEqual(self.ug("pace", "set", "pace_max_delay_seconds", "60", "codex").returncode, 0)
+        self.assertEqual(self.config(), {
+            "codex": {"pace_enabled": False, "pace_mode": "delay", "pace_max_delay_seconds": 60.0},
+            "claude": {"pace_margin_5h": 25.0}})
+        self.assertIn("mode delay", self.ug("pace", "codex").stdout)
+        self.assertIn("(codex delay)", self.ug("pace").stdout)
+
+    def test_threshold_and_profile_take_a_vendor(self):
+        self.assertEqual(self.ug("threshold", "7d", "80", "codex").returncode, 0)
+        self.assertEqual(self.config(), {"codex": {"threshold_7d": 80.0}})
+        self.assertIn("7d  80%", self.ug("threshold", "codex").stdout)
+        self.assertIn("7d  90%  (codex 80%)", self.ug("threshold").stdout)
+        self.assertEqual(self.ug("pace", "profile", "workweek", "claude").returncode, 0)
+        self.assertIn("preset workweek", self.ug("pace", "profile", "claude").stdout)
+        self.assertIn("claude has its own profile", self.ug("pace", "profile").stdout)
+
+    def test_an_unknown_vendor_or_stray_word_is_refused(self):
+        for args in (("off", "gemini"), ("on", "claude", "codex"), ("pace", "mode", "delay", "gemini"),
+                     ("threshold", "5h", "80", "gemini"), ("config", "gemini")):
+            with self.subTest(args=args):
+                self.assertEqual(self.ug(*args).returncode, 1)
+        self.assertFalse((self.dir / "config.json").exists())
+
+    def test_config_without_a_vendor_shows_the_shared_settings_and_each_override(self):
+        self.ug("off", "claude")
+        cfg = json.loads(self.ug("config").stdout)
+        self.assertTrue(cfg["enabled"])
+        self.assertEqual(cfg["claude"], {"enabled": False})
+        self.assertNotIn("codex", cfg)
+
+    def test_status_shows_each_vendors_own_state(self):
+        self.ug("off", "claude")
+        self.ug("pace", "mode", "delay", "codex")
+        out = self.ug("status").stdout.splitlines()
+        self.assertEqual(out[0].split(), ["guard", "claude", "off", "pacing", "on", "(hold)"])
+        self.assertEqual(out[1].split(), ["codex", "on", "pacing", "on", "(delay)"])
+        status = json.loads(self.ug("status", "--json").stdout)
+        self.assertEqual(status["claude"]["guard"], {"enabled": False, "pace_enabled": True, "pace_mode": "hold"})
+        self.assertEqual(status["codex"]["guard"], {"enabled": True, "pace_enabled": True, "pace_mode": "delay"})
+        self.assertEqual(status["guard"], {"enabled": True, "pace_enabled": True, "pace_mode": "hold"})
+
+    def test_brief_says_which_vendor_is_off(self):
+        self.write_cache(pct=42.0)
+        self.ug("off", "claude")
+        self.assertIn("· claude guard off", self.ug("brief").stdout)
 
     # --- thresholds ---------------------------------------------------------
 

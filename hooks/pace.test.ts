@@ -1,10 +1,13 @@
 import { describe, expect, test } from 'claude-code/testing'
 
+import { CONFIG_CASES } from './config-cases'
 import { CASES } from './pace-cases'
 import {
+  CONFIG_DEFAULTS,
   type Config,
   type Priority,
   type SessionEntry,
+  type Vendor,
   WINDOWS,
   fmtClock,
   fmtDuration,
@@ -140,6 +143,18 @@ describe('config', () => {
     expect(parseConfig(undefined).threshold_7d).toBe(90)
     expect(parseConfig('junk').enabled).toBe(true)
   })
+})
+
+describe('per-vendor config (hooks/config-cases.ts, shared with tests/test_parity.py)', () => {
+  for (const c of CONFIG_CASES) {
+    for (const reader of ['shared', 'claude', 'codex'] as const) {
+      test(`${c.name}: ${reader}`, () => {
+        const cfg = parseConfig(c.stored, reader === 'shared' ? undefined : (reader as Vendor)) as Record<string, unknown>
+        const want: Record<string, unknown> = { ...CONFIG_DEFAULTS, ...c.expect[reader] }
+        expect(cfg).toEqual(want)
+      })
+    }
+  }
 })
 
 describe('borrow ramp', () => {

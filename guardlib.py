@@ -9,7 +9,8 @@ reader, the session registry reader and the report.
 
 Files under the guard's directory (UG_DIR, else ~/.claude/usage-guard):
 
-    config.json          settings (ug writes, the mod and the hooks read)
+    config.json          settings (ug writes, the mod and the hooks read); a
+                         `claude` or `codex` object in it overrides keys for that vendor
     usage.json           the account's Claude windows, as the mod last saw them
     codex-usage.json     Codex's windows, written by the Codex hook
     codex-blocked.json   Codex's live hold marker
@@ -38,6 +39,7 @@ def _table(name: str, marker: str) -> dict:
 DEFAULTS = _table("defaults.ts", "export const DEFAULTS =")
 
 PACE_MODES = ("delay", "hold")
+VENDORS = ("claude", "codex")
 PRIORITIES = ("low", "normal", "high")
 
 # (key in the cache, config key holding its threshold, display label, config key of its margin, length)
@@ -150,17 +152,25 @@ def atomic_write(path, obj) -> None:
 
 # --- config --------------------------------------------------------------------
 
-def parse_config(stored) -> dict:
-    """`stored` over the defaults: a key the table lacks, or a value of another
-    type than its default, is left at the default (the mod reads it the same way)."""
+def parse_config(stored, vendor: Optional[str] = None) -> dict:
+    """The settings `vendor` runs under: the defaults, then the keys stored at the
+    top level, then the keys of the stored `claude` or `codex` object. A key the
+    table lacks, a value of another type than its default, or an unknown pace mode
+    is skipped and the layer below shows through (the mod reads it the same way).
+    Without a vendor, the shared settings alone."""
     cfg = dict(DEFAULTS)
-    if isinstance(stored, dict):
-        for key, value in stored.items():
-            if key in cfg and _same_type(value, cfg[key]):
-                cfg[key] = value
-    if cfg["pace_mode"] not in PACE_MODES:
-        cfg["pace_mode"] = DEFAULTS["pace_mode"]
+    _overlay(cfg, stored)
+    if vendor is not None and isinstance(stored, dict):
+        _overlay(cfg, stored.get(vendor))
     return cfg
+
+
+def _overlay(cfg: dict, layer) -> None:
+    if not isinstance(layer, dict):
+        return
+    for key, value in layer.items():
+        if key in cfg and _same_type(value, cfg[key]) and (key != "pace_mode" or value in PACE_MODES):
+            cfg[key] = value
 
 
 def _same_type(value, default) -> bool:
@@ -174,17 +184,42 @@ def _same_type(value, default) -> bool:
     return isinstance(value, type(default))
 
 
-def load_config() -> dict:
-    return parse_config(read_json(config_path(), {}))
+def load_config(vendor: Optional[str] = None) -> dict:
+    return parse_config(read_json(config_path(), {}), vendor)
 
 
-def save_config(updates: dict) -> dict:
+def save_config(updates: dict, vendor: Optional[str] = None) -> dict:
+    """Stores `updates` for one vendor, or shared. A shared update also drops those
+    keys from both vendors' overrides, so it applies everywhere; a vendor's value
+    equal to the shared one is dropped too, so the vendor follows the shared
+    setting again. An override object left empty is removed."""
     stored = read_json(config_path(), {})
     if not isinstance(stored, dict):
         stored = {}
-    stored.update(updates)
+    if vendor is None:
+        stored.update(updates)
+        cleared = updates
+    else:
+        own = stored.get(vendor)
+        stored[vendor] = {**(own if isinstance(own, dict) else {}), **updates}
+        shared = parse_config(stored)
+        cleared = {k: v for k, v in updates.items() if shared.get(k) == v}
+    for name in VENDORS if vendor is None else (vendor,):
+        own = stored.get(name)
+        if not isinstance(own, dict):
+            continue
+        for key in cleared:
+            own.pop(key, None)
+        if not own:
+            del stored[name]
     atomic_write(config_path(), stored)
-    return load_config()
+    return load_config(vendor)
+
+
+def overrides(vendor: str) -> dict:
+    """The settings where `vendor` differs from the shared ones."""
+    shared, own = load_config(), load_config(vendor)
+    return {k: v for k, v in own.items() if v != shared[k]}
 
 
 # --- pace math (mirrors hooks/pace.ts) --------------------------------------------
@@ -355,7 +390,7 @@ def paces(cache, cfg, now: float, t: Terms = ACCOUNT_TERMS, profile: Profile = U
     """One Pace per window present in the cache, whether or not pacing is engaged.
     The weekly window follows `profile`; the 5h window is always even."""
     out = []
-    enabled = bool(cfg["pace_enabled"])
+    enabled = bool(cfg["enabled"]) and bool(cfg["pace_enabled"])  # a guard that is off paces nothing
     min_used = float(cfg["pace_min_used_pct"])
     per_pct = float(cfg["pace_seconds_per_pct"])
     max_delay = float(cfg["pace_max_delay_seconds"])
@@ -556,12 +591,19 @@ def _window_rows(cache, cfg, now: float, t: Terms = ACCOUNT_TERMS) -> list:
     return rows
 
 
-def report(cfg, now: Optional[float] = None) -> dict:
-    """Everything an agent or a status command needs, as plain data."""
+def switches(cfg) -> dict:
+    return {"enabled": bool(cfg["enabled"]), "pace_enabled": bool(cfg["pace_enabled"]), "pace_mode": cfg["pace_mode"]}
+
+
+def report(now: Optional[float] = None, vendor: Optional[str] = None) -> dict:
+    """Everything an agent or a status command needs, as plain data. Each vendor
+    is read under its own settings; `vendor` names whose agent the brief is for."""
     now = time.time() if now is None else now
+    stored = read_json(config_path(), {})
+    cfg = parse_config(stored, "claude")
     cache = read_json(cache_path())
     stale = is_stale(cache, cfg, now)
-    claude = {"stale": stale, "windows": [], "hold": None, "sessions": []}
+    claude = {"guard": switches(cfg), "stale": stale, "windows": [], "hold": None, "sessions": []}
     if isinstance(cache, dict):
         claude["data_age_seconds"] = max(0, int(now - _num(cache.get("ts"), now)))
         claude["windows"] = _window_rows(cache, cfg, now)
@@ -581,7 +623,8 @@ def report(cfg, now: Optional[float] = None) -> dict:
             if claude["hold"] is None or row["hold"]["until"] > claude["hold"]["until"]:
                 claude["hold"] = dict(row["hold"])
         claude["sessions"].append(row)
-    codex = {"windows": [], "hold": None}
+    cfg = parse_config(stored, "codex")
+    codex = {"guard": switches(cfg), "windows": [], "hold": None}
     codex_cache = codex_limits(now, _num(cfg.get("codex_log_max_age_seconds"), DEFAULTS["codex_log_max_age_seconds"]))
     if codex_cache:
         codex["data_age_seconds"] = max(0, int(now - codex_cache["ts"]))
@@ -591,11 +634,10 @@ def report(cfg, now: Optional[float] = None) -> dict:
     if isinstance(marker, dict) and _num(marker.get("until"), 0) > now:
         codex["hold"] = {"window": marker.get("label"), "until": int(_num(marker["until"], 0))}
     return {
-        "guard": {"enabled": bool(cfg["enabled"]), "pace_enabled": bool(cfg["pace_enabled"]),
-                  "pace_mode": cfg["pace_mode"]},
+        "guard": switches(parse_config(stored)),  # the shared settings; each vendor's own are under it
         "claude": claude,
         "codex": codex,
-        "brief": brief_line(claude, codex, cfg),
+        "brief": brief_line(claude, codex, vendor),
     }
 
 
@@ -609,8 +651,13 @@ def _window_phrase(w: dict) -> str:
     return text
 
 
-def brief_line(claude: dict, codex: dict, cfg) -> str:
-    """One line telling an agent where both vendors stand."""
+def _switch_note(guard: dict) -> str:
+    return "guard off" if not guard["enabled"] else ("pacing off" if not guard["pace_enabled"] else "")
+
+
+def brief_line(claude: dict, codex: dict, vendor: Optional[str] = None) -> str:
+    """One line telling an agent where both vendors stand. For one vendor's agent
+    the switch note and the advice follow that vendor's own state."""
     parts = []
     if claude["windows"] and not claude["stale"]:
         parts.append("claude " + ", ".join(_window_phrase(w) for w in claude["windows"]))
@@ -618,18 +665,22 @@ def brief_line(claude: dict, codex: dict, cfg) -> str:
         parts.append("claude: usage data stale")
     if codex["windows"]:
         parts.append("codex " + ", ".join(_window_phrase(w) for w in codex["windows"]))
-    for vendor in (claude, codex):
-        if vendor.get("hold"):
-            clock = time.strftime("%H:%M", time.localtime(vendor["hold"]["until"]))
-            parts.append(f"HOLD on {vendor['hold']['window']} until {clock}")
+    for side in (claude, codex):
+        if side.get("hold"):
+            clock = time.strftime("%H:%M", time.localtime(side["hold"]["until"]))
+            parts.append(f"HOLD on {side['hold']['window']} until {clock}")
     if not parts:
         return ""
     line = "[usage] " + " · ".join(parts)
-    if not cfg["enabled"]:
-        line += " · guard off"
-    elif not cfg["pace_enabled"]:
-        line += " · pacing off"
-    if any(w.get("pacing") for w in claude["windows"] + codex["windows"]):
+    named = {"claude": claude, "codex": codex}
+    mine = {vendor: named[vendor]} if vendor in named else named
+    notes = {name: _switch_note(side["guard"]) for name, side in mine.items()}
+    if len(set(notes.values())) == 1:  # one vendor, or both alike: said once, as before
+        note = next(iter(notes.values()))
+        line += f" · {note}" if note else ""
+    else:
+        line += "".join(f" · {name} {note}" for name, note in notes.items() if note)
+    if any(w.get("pacing") for side in mine.values() for w in side["windows"]):
         line += (". Spend is running ahead of the window: the guard is pacing each tool call for you, so keep working "
                  "through the delays. Prefer fewer, larger steps; batch reads; defer fan-outs and long loops until back "
                  "on pace. Pacing is never a reason to stop, pause or ask the user to continue.")
