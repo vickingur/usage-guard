@@ -64,24 +64,33 @@ export type Usage = { ts: number; windows: Reading[] }
 /** The DEFAULTS table typed; the JSON literal is checked against Config here. */
 export const CONFIG_DEFAULTS: Config = DEFAULTS as Config
 
+export type Vendor = 'claude' | 'codex'
+
 /**
- * `stored` (a parsed config.json) over the defaults. A key the table does not
- * have, or a value of another type than its default, is left at the default:
- * the file is hand-edited and a typo must never break a tool call.
+ * The settings `vendor` runs under: the defaults, then the keys of `stored` (a
+ * parsed config.json), then those of its `claude` or `codex` object. A key the
+ * table does not have, a value of another type than its default, or an unknown
+ * pace mode is skipped and the layer below shows through: the file is
+ * hand-edited and a typo must never break a tool call. Without a vendor, the
+ * shared settings alone.
  */
-export function parseConfig(stored: unknown): Config {
+export function parseConfig(stored: unknown, vendor?: Vendor): Config {
   const cfg: Record<string, unknown> = { ...CONFIG_DEFAULTS }
-  if (typeof stored === 'object' && stored !== null) {
-    for (const [key, value] of Object.entries(stored)) {
-      if (!(key in cfg)) continue
-      const current = cfg[key]
-      if (Array.isArray(current)) {
-        if (Array.isArray(value) && value.length === current.length && value.every(v => typeof v === 'number' && v >= 0)) cfg[key] = value
-      } else if (typeof value === typeof current) cfg[key] = value
-    }
-  }
-  if (cfg['pace_mode'] !== 'delay' && cfg['pace_mode'] !== 'hold') cfg['pace_mode'] = 'hold'
+  overlay(cfg, stored)
+  if (vendor !== undefined && typeof stored === 'object' && stored !== null) overlay(cfg, (stored as Record<string, unknown>)[vendor])
   return cfg as Config
+}
+
+function overlay(cfg: Record<string, unknown>, layer: unknown): void {
+  if (typeof layer !== 'object' || layer === null || Array.isArray(layer)) return
+  for (const [key, value] of Object.entries(layer)) {
+    if (!(key in cfg)) continue
+    if (key === 'pace_mode' && value !== 'delay' && value !== 'hold') continue
+    const current = cfg[key]
+    if (Array.isArray(current)) {
+      if (Array.isArray(value) && value.length === current.length && value.every(v => typeof v === 'number' && v >= 0)) cfg[key] = value
+    } else if (typeof value === typeof current) cfg[key] = value
+  }
 }
 
 export const isStale = (usage: Usage | undefined, cfg: Config, now: number): usage is undefined =>
@@ -283,7 +292,8 @@ export function paces(usage: Usage, cfg: Config, now: number, t: Terms, profile:
     const line = paceLine(threshold, r.resetsAt, w.seconds, now, shape)
     const ahead = r.pct - line
     const over = ahead - margin
-    const active = cfg.pace_enabled && r.resetsAt > now && r.pct >= cfg.pace_min_used_pct && over > 0
+    // A guard that is off paces nothing.
+    const active = cfg.enabled && cfg.pace_enabled && r.resetsAt > now && r.pct >= cfg.pace_min_used_pct && over > 0
     const delaySeconds = active
       ? Math.min(cfg.pace_max_delay_seconds * t.delayFactor, over * cfg.pace_seconds_per_pct * t.delayFactor)
       : 0

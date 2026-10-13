@@ -26,6 +26,9 @@ For Codex it is a pair of command hooks. A small Python CLI, `ug`, drives both.
   any pacing or hold, and the session's priority with buttons to step it. Every
   prompt carries a `[usage]` line as context; `ug status --json` has every
   number.
+- **Per vendor.** Claude and Codex share one set of settings, and either can
+  override any of them: `ug off claude` lifts the Claude guard while Codex
+  stays paced, `ug pace mode delay codex` slows Codex while Claude holds.
 
 ## Install
 
@@ -210,31 +213,52 @@ registry is re-read at most every five seconds.
 
 ## Commands
 
-    ug status [--json]     guard state, both vendors, pace lines, sessions, any hold
+    ug status [--json]     guard state of each vendor, both vendors' usage, pace lines, sessions, any hold
     ug brief               the one-line position agents receive at every prompt
     ug sessions            live Claude sessions: priority, borrowing, last call, holds
     ug priority P [ID]     set a session's priority; ID is an id prefix, optional with one session
-    ug on | off            enable / disable the guard
-    ug threshold [W PCT]   show, or set, the threshold for 5h or 7d
-    ug pace                show pacing settings
-    ug pace on | off       enable / disable pacing (the threshold hold stays)
-    ug pace mode M         hold (wait until back on pace) or delay (a capped slowdown)
-    ug pace margin W PCT   how far ahead of the pace line window W may run
-    ug pace set KEY VALUE  any numeric pacing, priority or borrow setting
+    ug on | off [V]        enable / disable the guard
+    ug threshold [W PCT] [V]    show, or set, the threshold for 5h or 7d
+    ug pace [V]            show pacing settings
+    ug pace on | off [V]   enable / disable pacing (the threshold hold stays)
+    ug pace mode M [V]     hold (wait until back on pace) or delay (a capped slowdown)
+    ug pace margin W PCT [V]    how far ahead of the pace line window W may run
+    ug pace set KEY VALUE [V]   any numeric pacing, priority or borrow setting
+    ug pace profile ... [V]     the weekly profile (above)
     ug sim [...]           simulate sessions against the policy (below)
     ug install             install the plugin from this checkout, drop the legacy hooks
     ug codex install       add the guard's hook to Codex and trust it
     ug codex trusted       exit 0 when Codex has the hook and trusts it
-    ug release             release an in-progress hold now
-    ug config              effective settings as JSON
+    ug release             release an in-progress hold now, Claude's or Codex's
+    ug config [V]          effective settings as JSON
 
 Inside a session: `/ug`, `/ug priority`, `/ug priority low|normal|high`.
+
+### Per vendor
+
+`V` is `claude` or `codex`, always the last word. With it, a command shows or
+changes that vendor's settings alone and the other keeps its own:
+
+    ug off claude                 lift the Claude guard (say, the hour before its weekly reset); Codex stays guarded
+    ug on claude                  back on: Claude follows the shared setting again
+    ug pace mode delay codex      Codex slowed per call, Claude still held until back on pace
+    ug threshold 7d 80 codex      a lower weekly threshold for Codex only
+
+Without `V` a setting is shared: it applies to both vendors **and clears that
+key from both vendors' overrides**, so `ug on` means on everywhere and `ug
+pace mode hold` puts both on hold. A vendor set back to the shared value drops
+its override and follows the shared setting again. `ug threshold`, `ug pace`
+and `ug config` without `V` show the shared settings and where a vendor
+differs; `ug status` shows each vendor's guard, pacing and pace mode, and the
+`[usage]` line says `claude guard off` or `codex pacing off` when one differs.
+The `[usage]` line each agent receives notes its own vendor's state, and only a
+vendor whose guard is on is reported as pacing.
 
 ## Config: `config.json` (node-local)
 
 | Key | Default | Meaning |
 |---|---|---|
-| `enabled` | `true` | Master switch |
+| `enabled` | `true` | Master switch (per vendor with a `claude` or `codex` object, below) |
 | `threshold_5h` | `95.0` | Hold when the 5h window reaches this percent |
 | `threshold_7d` | `90.0` | Hold when the 7d window reaches this percent, until the last day |
 | `threshold_7d_release_hours` | `24` | Over the final hours of the week the hold level climbs from `threshold_7d` to 100%, linearly; 0 keeps it flat |
@@ -262,13 +286,32 @@ Only the keys you want to override need to be there; a key of the wrong type
 is left at its default. The table lives once, in `hooks/defaults.ts`, and the
 Python side reads it from there.
 
+A `claude` or `codex` object overrides any of these keys for that vendor. What
+a vendor runs under is the defaults, then the top-level keys, then its own
+object; a bad value in the object is skipped and the top-level one shows
+through. A config without these objects reads exactly as before, the same for
+both vendors.
+
+```json
+{
+  "pace_mode": "hold",
+  "claude": { "enabled": false },
+  "codex": { "pace_mode": "delay", "threshold_7d": 80 }
+}
+```
+
+Here Claude is unguarded, and Codex is guarded with a 7d threshold of 80% and
+delays instead of holds. The mod reads the file as Claude, the Codex hook as
+Codex, and `ug` writes it (`ug off claude`, `ug pace mode delay codex`, `ug
+threshold 7d 80 codex`).
+
 ## Layout
 
 | Path | Role |
 |---|---|
 | `hooks/register.tsx` | The mod: guard, footer, `/ug`, session registry |
 | `hooks/pace.ts` | Pace math and the shapes on disk, pure |
-| `hooks/defaults.ts`, `hooks/pace-cases.ts` | The config table and parity cases both languages read |
+| `hooks/defaults.ts`, `hooks/pace-cases.ts`, `hooks/config-cases.ts` | The config table and the parity cases (pace math, per-vendor config) both languages read |
 | `types/index.d.ts` | The mod's state contract |
 | `guardlib.py` | The same math for the CLI and Codex, the Codex reader, the report |
 | `codex-hook.py` | Codex's command hook |
@@ -284,7 +327,8 @@ The mod's tests run against Claude Code's own engine with the file system,
 clock and host sleeps answered in memory. The Python tests redirect every path
 with `UG_DIR`, `UG_CODEX_SESSIONS`, `UG_CODEX_HOME` and `UG_CLAUDE_SETTINGS`,
 so they never touch live state. `tests/test_parity.py` and `hooks/pace.test.ts`
-run the same cases, so the two implementations cannot drift.
+run the same cases, pace math and per-vendor config alike, so the two
+implementations cannot drift.
 
 ## Limitations
 

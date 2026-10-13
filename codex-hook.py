@@ -8,14 +8,16 @@ Codex has no plugin system, so it runs the guard as command hooks (`ug codex
 install` wires and trusts them). Each run refreshes `codex-usage.json` from the
 live transcript the payload names, whose last token_count event carries the
 rate limits the API returned, then decides from Codex's own windows. Codex
-sessions have no priority: they run under the account terms.
+sessions have no priority: they run under the account terms. Config is read as
+Codex's own (`load_config("codex")`): the shared settings with the `codex`
+overrides over them, so `ug off codex` stands Codex down and leaves Claude on.
 
 The hold blocks this process rather than denying: a denial tells the model "no"
 and it carries on burning tokens; a blocked hook stalls the loop until the
 window rolls over, or until the pace line has caught up. Nothing is ever
 denied; the hook's timeout in hooks.json covers a full week. Every tick
-re-reads config and cache, so `ug off`, `ug release` and a raised threshold
-take effect within one poll.
+re-reads config and cache, so `ug off [codex]`, `ug release` and a raised
+threshold take effect within one poll.
 """
 from __future__ import annotations
 
@@ -28,6 +30,8 @@ from pathlib import Path
 sys.dont_write_bytecode = True  # keep the shared layer free of __pycache__
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import guardlib as g  # noqa: E402
+
+VENDOR = "codex"
 
 
 def emit(event: str, **fields) -> None:
@@ -88,7 +92,7 @@ def refresh_cache(payload, now):
 
 def brief():
     try:
-        line = g.report(g.load_config())["brief"]
+        line = g.report(vendor=VENDOR)["brief"]
     except Exception:
         return 0
     if line:
@@ -110,7 +114,7 @@ def guard():
         except (OSError, ValueError):
             pass
 
-    cfg = g.load_config()
+    cfg = g.load_config(VENDOR)
     if not cfg["enabled"]:
         allow()
     now = time.time()
@@ -124,7 +128,7 @@ def guard():
     poll = poll_seconds(cfg)
     while True:  # until the window resets: no budget, nothing denied
         now = time.time()
-        cfg = g.load_config()
+        cfg = g.load_config(VENDOR)
         if not cfg["enabled"] or released_since(start):
             allow()
         cache = read_cache(cfg, now)
@@ -166,7 +170,7 @@ def pace(cfg, cache, now):
     if cfg["pace_mode"] == "delay":
         until = start + g.pace_delay(current)
         while time.time() < until:
-            cfg = g.load_config()
+            cfg = g.load_config(VENDOR)
             if not cfg["enabled"] or not cfg["pace_enabled"] or released_since(start):
                 allow()
             time.sleep(min(poll, max(0.05, until - time.time())))
@@ -174,7 +178,7 @@ def pace(cfg, cache, now):
 
     while True:  # hold mode: wait until no window is pacing
         now = time.time()
-        cfg = g.load_config()
+        cfg = g.load_config(VENDOR)
         if not cfg["enabled"] or not cfg["pace_enabled"] or released_since(start):
             allow()
         cache = read_cache(cfg, now)

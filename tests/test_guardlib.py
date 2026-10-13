@@ -33,6 +33,45 @@ class GuardlibTest(unittest.TestCase):
         self.g.config_path().write_text("{not json")
         self.assertEqual(self.g.load_config()["threshold_5h"], 95.0)
 
+    def test_an_old_config_with_shared_keys_only_reads_the_same_for_every_vendor(self):
+        self.g.config_path().write_text(json.dumps({"enabled": False, "pace_mode": "delay", "threshold_5h": 80}))
+        shared = self.g.load_config()
+        self.assertEqual((shared["enabled"], shared["pace_mode"], shared["threshold_5h"]), (False, "delay", 80))
+        self.assertEqual(self.g.load_config("claude"), shared)
+        self.assertEqual(self.g.load_config("codex"), shared)
+
+    def test_a_vendor_override_beats_the_shared_key_for_that_vendor_alone(self):
+        self.g.config_path().write_text(json.dumps({
+            "enabled": True, "pace_mode": "hold", "threshold_7d": 80,
+            "claude": {"enabled": False}, "codex": {"pace_mode": "delay"}}))
+        claude, codex, shared = self.g.load_config("claude"), self.g.load_config("codex"), self.g.load_config()
+        self.assertEqual((claude["enabled"], claude["pace_mode"], claude["threshold_7d"]), (False, "hold", 80))
+        self.assertEqual((codex["enabled"], codex["pace_mode"], codex["threshold_7d"]), (True, "delay", 80))
+        self.assertEqual((shared["enabled"], shared["pace_mode"]), (True, "hold"))
+        self.assertNotIn("claude", shared)
+        self.assertEqual(self.g.overrides("claude"), {"enabled": False})
+
+    def test_saving_for_a_vendor_writes_its_override_and_leaves_the_rest(self):
+        self.g.save_config({"threshold_5h": 80.0})
+        cfg = self.g.save_config({"enabled": False}, "claude")
+        self.assertFalse(cfg["enabled"])
+        self.assertEqual(json.loads(self.g.config_path().read_text()), {"threshold_5h": 80.0, "claude": {"enabled": False}})
+        self.assertTrue(self.g.load_config("codex")["enabled"])
+
+    def test_a_shared_save_clears_that_key_from_both_overrides(self):
+        self.g.save_config({"enabled": False}, "claude")
+        self.g.save_config({"enabled": False, "pace_mode": "delay"}, "codex")
+        self.g.save_config({"enabled": True})
+        self.assertEqual(json.loads(self.g.config_path().read_text()), {"codex": {"pace_mode": "delay"}, "enabled": True})
+        self.assertTrue(self.g.load_config("claude")["enabled"])
+        self.assertTrue(self.g.load_config("codex")["enabled"])
+
+    def test_a_vendor_set_back_to_the_shared_value_follows_it_again(self):
+        self.g.save_config({"enabled": False}, "claude")
+        self.g.save_config({"enabled": False}, "codex")
+        self.g.save_config({"enabled": True}, "claude")
+        self.assertEqual(json.loads(self.g.config_path().read_text()), {"codex": {"enabled": False}})
+
     def test_atomic_write_leaves_no_temp_files_behind(self):
         self.g.atomic_write(self.g.cache_path(), {"a": 1})
         names = [p.name for p in Path(self.tmp.name).iterdir()]
