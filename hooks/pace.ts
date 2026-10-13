@@ -283,7 +283,7 @@ export function paces(usage: Usage, cfg: Config, now: number, t: Terms, profile:
     const line = paceLine(threshold, r.resetsAt, w.seconds, now, shape)
     const ahead = r.pct - line
     const over = ahead - margin
-    const active = cfg.pace_enabled && r.resetsAt > now && r.pct >= cfg.pace_min_used_pct && over > 0
+    const active = cfg.enabled && cfg.pace_enabled && r.resetsAt > now && r.pct >= cfg.pace_min_used_pct && over > 0
     const delaySeconds = active
       ? Math.min(cfg.pace_max_delay_seconds * t.delayFactor, over * cfg.pace_seconds_per_pct * t.delayFactor)
       : 0

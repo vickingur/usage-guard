@@ -416,11 +416,15 @@ const windowPhrase = (w: UsageGuardWindow): string => {
   return text
 }
 
-/** The window that would pace this session first: least headroom to its pace-at level. */
-const nearest = (view: UsageGuardView): UsageGuardWindow | undefined =>
-  view.windows.reduce<UsageGuardWindow | undefined>((a, b) => (a === undefined || b.paceAt - b.pct < a.paceAt - a.pct ? b : a), undefined)
+/** The window that would act on this session first: least headroom to its pace-at level, or its hold level with pacing off. */
+const nearest = (view: UsageGuardView): UsageGuardWindow | undefined => {
+  const at = (w: UsageGuardWindow): number => (view.paceEnabled ? w.paceAt : w.holdAt) - w.pct
+  return view.windows.reduce<UsageGuardWindow | undefined>((a, b) => (a === undefined || at(b) < at(a) ? b : a), undefined)
+}
 
+// A switched-off guard or pacing names no level it will not act on.
 const blockPhrase = (view: UsageGuardView): string => {
+  if (!view.enabled) return ''
   if (view.hold !== null) return `${view.hold.kind === 'pace' ? 'pace hold' : 'HOLD'} on ${view.hold.label} until ${fmtClock(view.hold.until)}`
   const w = nearest(view)
   if (w === undefined) return ''
@@ -428,9 +432,13 @@ const blockPhrase = (view: UsageGuardView): string => {
     return `pacing ${Math.round(view.pacing.delaySeconds)}s/call, back on pace in ${fmtDuration(view.pacing.backIn)}; hold at ${Math.round(w.holdAt)}%` +
       (w.etaHoldSeconds === undefined ? '' : ` (about ${fmtDuration(w.etaHoldSeconds)} at the current rate)`)
   }
+  const hold = `hold at ${Math.round(w.holdAt)}%`
+  if (!view.paceEnabled) {
+    return `${hold} on ${w.label}` + (w.etaHoldSeconds === undefined ? '' : ` (about ${fmtDuration(w.etaHoldSeconds)} at the current rate)`)
+  }
   return `pacing starts at ${Math.round(w.paceAt)}% on ${w.label}` +
     (w.etaPaceSeconds === undefined ? '' : ` (about ${fmtDuration(w.etaPaceSeconds)} at the current rate)`) +
-    `, hold at ${Math.round(w.holdAt)}%` + (w.etaHoldSeconds === undefined ? '' : ` (about ${fmtDuration(w.etaHoldSeconds)})`)
+    `, ${hold}` + (w.etaHoldSeconds === undefined ? '' : ` (about ${fmtDuration(w.etaHoldSeconds)})`)
 }
 
 // Footer marks. ⧖ and ↻ draw double-width in some terminal fonts and collide
@@ -460,7 +468,7 @@ const briefLine = (view: UsageGuardView, priority: Priority): string => {
   const block = blockPhrase(view)
   if (block !== '') parts.push(block)
   if (parts.length === 0) return ''
-  parts.push(`priority ${liftText(priority, view.lift)}`)
+  parts.push(`priority ${liftText(priority, view.enabled ? view.lift : 0)}`)
   let line = `[usage] ${parts.join(' · ')}`
   if (!view.enabled) line += ' · guard off'
   else if (!view.paceEnabled) line += ' · pacing off'
@@ -649,7 +657,7 @@ export const register: Register = (on, options) => {
           <Text color={state.color} bold={state.bold}>{state.glyph}</Text>
           <Text dimColor={view?.stale ?? true}>{short}</Text>
           <Button key="priority-down" plain label="‹" onPress={() => void stepPriority($, -1)} />
-          <Button key="priority-up" plain label={`${liftGlyph(priority, view?.lift ?? 0).trimEnd()} ›`} onPress={() => void stepPriority($, 1)} />
+          <Button key="priority-up" plain label={`${liftGlyph(priority, view?.enabled ? view.lift : 0).trimEnd()} ›`} onPress={() => void stepPriority($, 1)} />
         </Box>
       )
     }
@@ -695,12 +703,12 @@ export const register: Register = (on, options) => {
               ◔{Math.round(pacing.delaySeconds)}s ↺{fmtDuration(pacing.backIn)}
             </Text>
           )}
-          {hold === null && near !== undefined && !isPacing && (
+          {hold === null && near !== undefined && !isPacing && view?.enabled && view.paceEnabled && (
             <Text dimColor>
               ◔{sup(near.label)}@{Math.round(near.paceAt)}%{near.etaPaceSeconds === undefined ? '' : `~${fmtDuration(near.etaPaceSeconds)}`}
             </Text>
           )}
-          {hold === null && near !== undefined && (
+          {hold === null && near !== undefined && view?.enabled && (
             <Text dimColor>
               ⊘@{Math.round(near.holdAt)}%{near.etaHoldSeconds === undefined ? '' : `~${fmtDuration(near.etaHoldSeconds)}`}
             </Text>
@@ -708,7 +716,7 @@ export const register: Register = (on, options) => {
         </Box>
         <Box gap={0}>
           <Button key="priority-down" plain label="‹" onPress={() => void stepPriority($, -1)} />
-          <Text>{liftGlyph(priority, view?.lift ?? 0)}</Text>
+          <Text>{liftGlyph(priority, view?.enabled ? view.lift : 0)}</Text>
           <Button key="priority-up" plain label="›" onPress={() => void stepPriority($, 1)} />
         </Box>
       </Box>
@@ -734,7 +742,9 @@ export const register: Register = (on, options) => {
             <Text color={view.stale ? undefined : pctColor(w.pct, w.holdAt)} dimColor={view.stale} bold>{Math.round(w.pct)}%</Text>
             {w.ahead >= 0.5 && <Text color={w.pacing ? 'warning' : undefined} dimColor={!w.pacing}>▴{Math.round(w.ahead)}</Text>}
             <Text dimColor>
-              resets {fmtWhen(now + w.resetsIn, now)} ({fmtDuration(w.resetsIn)}) · pace {Math.round(w.paceAt)}%{eta(w.etaPaceSeconds)} · hold {Math.round(w.holdAt)}%{eta(w.etaHoldSeconds)}
+              resets {fmtWhen(now + w.resetsIn, now)} ({fmtDuration(w.resetsIn)})
+              {view.enabled && view.paceEnabled ? ` · pace ${Math.round(w.paceAt)}%${eta(w.etaPaceSeconds)}` : ''}
+              {view.enabled ? ` · hold ${Math.round(w.holdAt)}%${eta(w.etaHoldSeconds)}` : ''}
             </Text>
           </Box>
         ))}
