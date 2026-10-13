@@ -355,7 +355,7 @@ def paces(cache, cfg, now: float, t: Terms = ACCOUNT_TERMS, profile: Profile = U
     """One Pace per window present in the cache, whether or not pacing is engaged.
     The weekly window follows `profile`; the 5h window is always even."""
     out = []
-    enabled = bool(cfg["pace_enabled"])
+    enabled = bool(cfg["enabled"]) and bool(cfg["pace_enabled"])
     min_used = float(cfg["pace_min_used_pct"])
     per_pct = float(cfg["pace_seconds_per_pct"])
     max_delay = float(cfg["pace_max_delay_seconds"])

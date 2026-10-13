@@ -428,6 +428,37 @@ describe('prompt.submit and session.measure', () => {
     await ui.unmount()
   })
 
+  test('with the guard off the brief and footer name no pace or hold level', async ($, on) => {
+    const w = world(on)
+    config(w, { enabled: false })
+    await start($, w, fiveHour(w, 70))
+    const entered = await $.prompt.submit({ text: 'hi', wait: false, origin: { kind: 'composer' } })
+    expect(entered.context?.[0]).toContain('[usage] claude 5h 70%')
+    expect(entered.context?.[0]).not.toContain('pacing starts')
+    expect(entered.context?.[0]).not.toContain('hold at')
+    expect(entered.context?.[0]).toContain('priority normal · guard off')
+    const ui = await $.ui.mount({ plugin: 'usage-guard', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
+    expect(await ui.find({ type: 'Text', text: /○/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /◔/ })).toBe(undefined)
+    expect(await ui.find({ type: 'Text', text: /⊘@/ })).toBe(undefined)
+    expect(await ui.find({ type: 'Text', text: / as / })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('with pacing off the brief and footer name the hold level alone', async ($, on) => {
+    const w = world(on)
+    config(w, { pace_enabled: false })
+    await start($, w, fiveHour(w, 70))
+    const entered = await $.prompt.submit({ text: 'hi', wait: false, origin: { kind: 'composer' } })
+    expect(entered.context?.[0]).not.toContain('pacing starts')
+    expect(entered.context?.[0]).toContain('hold at 95% on 5h')
+    expect(entered.context?.[0]).toContain('· pacing off')
+    const ui = await $.ui.mount({ plugin: 'usage-guard', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
+    expect(await ui.find({ type: 'Text', text: /◔/ })).toBe(undefined)
+    expect(await ui.find({ type: 'Text', text: /⊘@95%/ })).toBeDefined()
+    await ui.unmount()
+  })
+
   test('a measurement writes usage.json for the CLI and the other sessions', async ($, on) => {
     const w = world(on)
     config(w)

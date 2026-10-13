@@ -318,6 +318,42 @@ export const CASES = [
     }
   },
   {
+    "name": "the guard off disengages every window though pacing is on",
+    "config": {
+      "pace_margin_5h": 20.0,
+      "enabled": false
+    },
+    "priority": "low",
+    "idle": {},
+    "now": 1000000,
+    "windows": [
+      {
+        "key": "five_hour",
+        "pct": 70.0,
+        "resets_in": 10800
+      }
+    ],
+    "expect": {
+      "terms": {
+        "marginFactor": 1,
+        "delayFactor": 1,
+        "lift": 2
+      },
+      "paces": [
+        {
+          "label": "5h",
+          "line": 38.0,
+          "ahead": 32.0,
+          "margin": 20.0,
+          "active": false,
+          "delaySeconds": 0.0,
+          "catchup_in": 0,
+          "holdAt": 95.0
+        }
+      ]
+    }
+  },
+  {
     "name": "a step ramp (full <= after) lends nothing before `after` and everything from it",
     "config": {
       "pace_margin_5h": 20.0,
