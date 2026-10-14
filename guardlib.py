@@ -45,6 +45,15 @@ WINDOWS = (
     ("five_hour", "threshold_5h", "5h", "pace_margin_5h", 5 * 3600),
     ("seven_day", "threshold_7d", "7d", "pace_margin_7d", 7 * 86400),
 )
+# Config key of each window's own pacing switch.
+PACE_SWITCHES = {"five_hour": "pace_enabled_5h", "seven_day": "pace_enabled_7d"}
+
+
+def paces_window(cfg, key: str) -> bool:
+    """Pacing can engage on window `key`: the guard, pacing and the window's own switch are all on."""
+    return bool(cfg["enabled"]) and bool(cfg["pace_enabled"]) and bool(cfg[PACE_SWITCHES[key]])
+
+
 # Codex reports `window_minutes`; map them onto the same two windows.
 CODEX_WINDOW_MINUTES = {300: "five_hour", 10080: "seven_day"}
 
@@ -355,7 +364,6 @@ def paces(cache, cfg, now: float, t: Terms = ACCOUNT_TERMS, profile: Profile = U
     """One Pace per window present in the cache, whether or not pacing is engaged.
     The weekly window follows `profile`; the 5h window is always even."""
     out = []
-    enabled = bool(cfg["enabled"]) and bool(cfg["pace_enabled"])
     min_used = float(cfg["pace_min_used_pct"])
     per_pct = float(cfg["pace_seconds_per_pct"])
     max_delay = float(cfg["pace_max_delay_seconds"])
@@ -370,7 +378,7 @@ def paces(cache, cfg, now: float, t: Terms = ACCOUNT_TERMS, profile: Profile = U
         line = pace_line(threshold, resets_at, length, now, shape)
         ahead = pct - line
         over = ahead - margin
-        active = enabled and resets_at > now and pct >= min_used and over > 0
+        active = paces_window(cfg, key) and resets_at > now and pct >= min_used and over > 0
         delay = min(max_delay * t.delay_factor, over * per_pct * t.delay_factor) if active else 0.0
         catchup = line_reaches(threshold, resets_at, length, now, pct - margin, shape)
         out.append(Pace(key, label, pct, resets_at, threshold, line, ahead, margin, active, delay, catchup,
@@ -549,7 +557,7 @@ def _window_rows(cache, cfg, now: float, t: Terms = ACCOUNT_TERMS) -> list:
             "window": p.label, "used_pct": round(p.pct, 1), "threshold_pct": p.threshold, "hold_at_pct": round(p.hold_at, 1),
             "resets_at": p.resets_at, "resets_in_seconds": max(0, p.resets_at - int(now)),
             "pace_line_pct": round(p.line, 1), "ahead_pct": round(p.ahead, 1),
-            "margin_pct": round(p.margin, 1), "pacing": p.active,
+            "margin_pct": round(p.margin, 1), "pace_enabled": paces_window(cfg, p.key), "pacing": p.active,
             "delay_seconds": round(p.delay_seconds, 1),
             "catchup_in_seconds": max(0, p.catchup_at - int(now)) if p.active else 0,
         })
@@ -629,6 +637,10 @@ def brief_line(claude: dict, codex: dict, cfg) -> str:
         line += " · guard off"
     elif not cfg["pace_enabled"]:
         line += " · pacing off"
+    else:
+        off = [label for key, _t, label, _m, _l in WINDOWS if not paces_window(cfg, key)]
+        if off:
+            line += f" · {'+'.join(off)} pacing off"
     if any(w.get("pacing") for w in claude["windows"] + codex["windows"]):
         line += (". Spend is running ahead of the window: the guard is pacing each tool call for you, so keep working "
                  "through the delays. Prefer fewer, larger steps; batch reads; defer fan-outs and long loops until back "

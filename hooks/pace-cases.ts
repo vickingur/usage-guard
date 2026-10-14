@@ -318,6 +318,57 @@ export const CASES = [
     }
   },
   {
+    "name": "the 7d switch off leaves 5h pacing and disengages only the weekly window",
+    "config": {
+      "pace_margin_5h": 20.0,
+      "pace_enabled_7d": false
+    },
+    "priority": "high",
+    "idle": {},
+    "now": 1000000,
+    "windows": [
+      {
+        "key": "five_hour",
+        "pct": 70.0,
+        "resets_in": 10800
+      },
+      {
+        "key": "seven_day",
+        "pct": 80.0,
+        "resets_in": 432000
+      }
+    ],
+    "expect": {
+      "terms": {
+        "marginFactor": 1,
+        "delayFactor": 1,
+        "lift": 0
+      },
+      "paces": [
+        {
+          "label": "5h",
+          "line": 38.0,
+          "ahead": 32.0,
+          "margin": 20.0,
+          "active": true,
+          "delaySeconds": 30.0,
+          "catchup_in": 2273,
+          "holdAt": 95.0
+        },
+        {
+          "label": "7d",
+          "line": 25.714,
+          "ahead": 54.286,
+          "margin": 15.0,
+          "active": false,
+          "delaySeconds": 0.0,
+          "catchup_in": 0,
+          "holdAt": 90.0
+        }
+      ]
+    }
+  },
+  {
     "name": "the guard off disengages every window though pacing is on",
     "config": {
       "pace_margin_5h": 20.0,
