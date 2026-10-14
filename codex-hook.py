@@ -167,7 +167,7 @@ def pace(cfg, cache, now):
         until = start + g.pace_delay(current)
         while time.time() < until:
             cfg = g.load_config()
-            if not cfg["enabled"] or not cfg["pace_enabled"] or released_since(start):
+            if not any(p.active and g.paces_window(cfg, p.key) for p in current) or released_since(start):
                 allow()
             time.sleep(min(poll, max(0.05, until - time.time())))
         allow(pace_context(current, cfg, time.time() - start))

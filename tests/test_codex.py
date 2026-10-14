@@ -189,6 +189,18 @@ class CodexHookTest(CodexFixture):
         out = self.finish(proc)
         self.assertEqual(out, "")
 
+    def test_switching_the_pacing_window_off_mid_delay_releases_at_once(self):
+        (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "pace_mode": "delay", "pace_max_delay_seconds": 20, "pace_seconds_per_pct": 2, "pace_margin_5h": 20}))
+        transcript(self.transcript, seven_pct=12.0, five_pct=70.0)
+        proc = subprocess.Popen([sys.executable, str(HOOK), *PRE], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, env=self.env)
+        proc.stdin.write(self.payload("PreToolUse", tool_name="Bash", tool_input={})); proc.stdin.close()
+        time.sleep(0.5)
+        self.assertIsNone(proc.poll())
+        self.invoke(UG, "", "pace", "off", "5h")
+        out = self.finish(proc)
+        self.assertEqual(out, "")
+
     def test_hold_mode_releases_when_fresh_usage_is_back_on_pace(self):
         (self.dir / "config.json").write_text(json.dumps({"poll_seconds": 0.1, "pace_mode": "hold", "pace_margin_5h": 20}))
         transcript(self.transcript, seven_pct=12.0, five_pct=70.0)

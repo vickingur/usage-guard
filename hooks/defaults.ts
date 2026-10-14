@@ -8,6 +8,8 @@ export const DEFAULTS = {
   "poll_seconds": 5,
   "stale_after_seconds": 600,
   "pace_enabled": true,
+  "pace_enabled_5h": true,
+  "pace_enabled_7d": true,
   "pace_mode": "hold",
   "pace_margin_5h": 10.0,
   "pace_margin_7d": 15.0,

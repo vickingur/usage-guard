@@ -155,6 +155,17 @@ class UgTest(unittest.TestCase):
         self.assertEqual(self.config()["borrow_after_seconds"], 60.0)
         self.assertEqual(self.ug("pace", "set", "threshold_5h", "1").returncode, 1)
 
+    def test_pace_off_for_one_window(self):
+        self.assertEqual(self.ug("pace", "off", "7d").returncode, 0)
+        self.assertIs(self.config()["pace_enabled_7d"], False)
+        self.assertNotIn("pace_enabled_5h", self.config())
+        shown = self.ug("pace").stdout
+        self.assertRegex(shown, r"pacing 7d\s+\S*off")
+        self.assertRegex(shown, r"pacing 5h\s+\S*on")
+        self.assertEqual(self.ug("pace", "on", "7d").returncode, 0)
+        self.assertIs(self.config()["pace_enabled_7d"], True)
+        self.assertEqual(self.ug("pace", "off", "1d").returncode, 1)
+
     # --- weekly profile ---------------------------------------------------------
 
     def test_profile_presets_days_and_hours(self):

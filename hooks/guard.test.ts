@@ -459,6 +459,29 @@ describe('prompt.submit and session.measure', () => {
     await ui.unmount()
   })
 
+  test('with 7d pacing off the weekly window never paces and 5h still does', async ($, on) => {
+    const w = world(on)
+    config(w, { pace_enabled_7d: false })
+    const week: SessionRateLimit = { kind: 'seven_day', percentUsed: 80, resetsAt: new Date((w.nowSeconds() + 5 * 24 * H) * 1000).toISOString() }
+    await start($, w, [week]) // 80% two days into the week: far ahead, but its pacing is off
+    expect((await callBash($)).deny).toBe(undefined)
+    expect(w.sleeps).toEqual([])
+    let entered = await $.prompt.submit({ text: 'hi', wait: false, origin: { kind: 'composer' } })
+    expect(entered.context?.[0]).not.toContain('PACING')
+    expect(entered.context?.[0]).toContain('hold at 90% on 7d')
+    expect(entered.context?.[0]).toContain('· 7d pacing off')
+    const ui = await $.ui.mount({ plugin: 'usage-guard', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
+    expect(await ui.find({ type: 'Text', text: /◔/ })).toBe(undefined)
+    expect(await ui.find({ type: 'Text', text: /⊘@90%/ })).toBeDefined()
+    await ui.unmount()
+    w.limits = [...fiveHour(w, 70), week]
+    await $.session.measure({ context: { window: 1 }, rateLimits: w.limits, changed: ['rateLimits'] })
+    expect((await callBash($)).deny).toBe(undefined)
+    expect(total(w.sleeps)).toBeGreaterThan(0) // 5h is 32 over its line: paced as before
+    entered = await $.prompt.submit({ text: 'hi', wait: false, origin: { kind: 'composer' } })
+    expect(entered.context?.[0]).toContain('5h 70% (+32 over pace line)')
+  })
+
   test('a measurement writes usage.json for the CLI and the other sessions', async ($, on) => {
     const w = world(on)
     config(w)

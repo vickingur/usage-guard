@@ -42,6 +42,7 @@ import {
   paceDelay,
   mergeUsage,
   paces,
+  pacesWindow,
   parseConfig,
   profileOf,
   sessionFromFile,
@@ -337,6 +338,7 @@ const windowsView = (list: readonly Pace[], cfg: Config, now: number, stale: boo
       resetsIn,
       elapsedPct: Math.round(100 * (1 - Math.min(resetsIn, length) / length)),
       paceAt,
+      paces: pacesWindow(cfg, p.key),
       ...(etaPace === undefined ? {} : { etaPaceSeconds: Math.round(etaPace) }),
       ...(etaHold === undefined ? {} : { etaHoldSeconds: Math.round(etaHold) }),
     }
@@ -418,7 +420,7 @@ const windowPhrase = (w: UsageGuardWindow): string => {
 
 /** The window that would act on this session first: least headroom to its pace-at level, or its hold level with pacing off. */
 const nearest = (view: UsageGuardView): UsageGuardWindow | undefined => {
-  const at = (w: UsageGuardWindow): number => (view.paceEnabled ? w.paceAt : w.holdAt) - w.pct
+  const at = (w: UsageGuardWindow): number => (w.paces ? w.paceAt : w.holdAt) - w.pct
   return view.windows.reduce<UsageGuardWindow | undefined>((a, b) => (a === undefined || at(b) < at(a) ? b : a), undefined)
 }
 
@@ -433,7 +435,7 @@ const blockPhrase = (view: UsageGuardView): string => {
       (w.etaHoldSeconds === undefined ? '' : ` (about ${fmtDuration(w.etaHoldSeconds)} at the current rate)`)
   }
   const hold = `hold at ${Math.round(w.holdAt)}%`
-  if (!view.paceEnabled) {
+  if (!w.paces) {
     return `${hold} on ${w.label}` + (w.etaHoldSeconds === undefined ? '' : ` (about ${fmtDuration(w.etaHoldSeconds)} at the current rate)`)
   }
   return `pacing starts at ${Math.round(w.paceAt)}% on ${w.label}` +
@@ -472,6 +474,10 @@ const briefLine = (view: UsageGuardView, priority: Priority): string => {
   let line = `[usage] ${parts.join(' · ')}`
   if (!view.enabled) line += ' · guard off'
   else if (!view.paceEnabled) line += ' · pacing off'
+  else {
+    const off = view.windows.filter(w => !w.paces).map(w => w.label)
+    if (off.length > 0) line += ` · ${off.join('+')} pacing off`
+  }
   if (view.windows.some(w => w.pacing)) line += `. Spend is running ahead of the window: the guard is pacing each tool call for you. ${ADVICE}`
   return line
 }
@@ -564,7 +570,7 @@ const guard = async ($: EngineInterface, signal: AbortSignal): Promise<Verdict> 
       if (signal.aborted) break
       now = await seconds($)
       cfg = await loadConfig($, p)
-      if (!cfg.enabled || !cfg.pace_enabled || (await releasedSince($, p, start))) break
+      if (!entered.some(one => one.active && pacesWindow(cfg, one.key)) || (await releasedSince($, p, start))) break
     }
     s.pacingSeconds = 0
     return { context: paceContext(entered, priority, t, cfg, now - start, now) }
@@ -703,7 +709,7 @@ export const register: Register = (on, options) => {
               ◔{Math.round(pacing.delaySeconds)}s ↺{fmtDuration(pacing.backIn)}
             </Text>
           )}
-          {hold === null && near !== undefined && !isPacing && view?.enabled && view.paceEnabled && (
+          {hold === null && near !== undefined && !isPacing && near.paces && (
             <Text dimColor>
               ◔{sup(near.label)}@{Math.round(near.paceAt)}%{near.etaPaceSeconds === undefined ? '' : `~${fmtDuration(near.etaPaceSeconds)}`}
             </Text>
@@ -743,7 +749,7 @@ export const register: Register = (on, options) => {
             {w.ahead >= 0.5 && <Text color={w.pacing ? 'warning' : undefined} dimColor={!w.pacing}>▴{Math.round(w.ahead)}</Text>}
             <Text dimColor>
               resets {fmtWhen(now + w.resetsIn, now)} ({fmtDuration(w.resetsIn)})
-              {view.enabled && view.paceEnabled ? ` · pace ${Math.round(w.paceAt)}%${eta(w.etaPaceSeconds)}` : ''}
+              {w.paces ? ` · pace ${Math.round(w.paceAt)}%${eta(w.etaPaceSeconds)}` : ''}
               {view.enabled ? ` · hold ${Math.round(w.holdAt)}%${eta(w.etaHoldSeconds)}` : ''}
             </Text>
           </Box>

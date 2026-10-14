@@ -11,6 +11,8 @@ export type UsageGuardWindow = {
   resetsIn: number
   elapsedPct: number
   paceAt: number
+  /** Pacing can engage on this window: the guard, pacing and its own switch are on. */
+  paces: boolean
   etaPaceSeconds?: number
   etaHoldSeconds?: number
 }

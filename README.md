@@ -217,7 +217,7 @@ registry is re-read at most every five seconds.
     ug on | off            enable / disable the guard
     ug threshold [W PCT]   show, or set, the threshold for 5h or 7d
     ug pace                show pacing settings
-    ug pace on | off       enable / disable pacing (the threshold hold stays)
+    ug pace on | off [W]   enable / disable pacing, or only window 5h or 7d (the threshold hold stays)
     ug pace mode M         hold (wait until back on pace) or delay (a capped slowdown)
     ug pace margin W PCT   how far ahead of the pace line window W may run
     ug pace set KEY VALUE  any numeric pacing, priority or borrow setting
@@ -241,6 +241,8 @@ Inside a session: `/ug`, `/ug priority`, `/ug priority low|normal|high`.
 | `poll_seconds` | `5` | How often a hold or delay re-checks for release |
 | `stale_after_seconds` | `600` | Usage older than this is ignored (fails open) |
 | `pace_enabled` | `true` | Pacing on or off |
+| `pace_enabled_5h` | `true` | Pacing on the 5h window, Claude's and Codex's (`ug pace off 5h`) |
+| `pace_enabled_7d` | `true` | Pacing on the weekly window, Claude's and Codex's (`ug pace off 7d`) |
 | `pace_mode` | `"hold"` | `hold` (wait until back on pace) or `delay` (a capped slowdown per call) |
 | `pace_margin_5h` | `10.0` | Points ahead of the 5h pace line a high session may run |
 | `pace_margin_7d` | `15.0` | Same for the weekly window |

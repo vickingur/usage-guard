@@ -13,6 +13,8 @@ export type Config = {
   poll_seconds: number
   stale_after_seconds: number
   pace_enabled: boolean
+  pace_enabled_5h: boolean
+  pace_enabled_7d: boolean
   pace_mode: 'delay' | 'hold'
   pace_margin_5h: number
   pace_margin_7d: number
@@ -48,12 +50,19 @@ export type Window = {
   seconds: number
   thresholdKey: 'threshold_5h' | 'threshold_7d'
   marginKey: 'pace_margin_5h' | 'pace_margin_7d'
+  switchKey: 'pace_enabled_5h' | 'pace_enabled_7d'
 }
 
 export const WINDOWS: readonly Window[] = [
-  { key: 'five_hour', label: '5h', seconds: 5 * 3600, thresholdKey: 'threshold_5h', marginKey: 'pace_margin_5h' },
-  { key: 'seven_day', label: '7d', seconds: 7 * 86400, thresholdKey: 'threshold_7d', marginKey: 'pace_margin_7d' },
+  { key: 'five_hour', label: '5h', seconds: 5 * 3600, thresholdKey: 'threshold_5h', marginKey: 'pace_margin_5h', switchKey: 'pace_enabled_5h' },
+  { key: 'seven_day', label: '7d', seconds: 7 * 86400, thresholdKey: 'threshold_7d', marginKey: 'pace_margin_7d', switchKey: 'pace_enabled_7d' },
 ]
+
+/** Pacing can engage on window `key`: the guard, pacing and the window's own switch are all on. */
+export const pacesWindow = (cfg: Config, key: WindowKey): boolean => {
+  const w = WINDOWS.find(one => one.key === key)
+  return cfg.enabled && cfg.pace_enabled && w !== undefined && cfg[w.switchKey]
+}
 
 /** One window's reading: percent used and when it resets, in epoch seconds. */
 export type Reading = { key: WindowKey; pct: number; resetsAt: number }
@@ -283,7 +292,7 @@ export function paces(usage: Usage, cfg: Config, now: number, t: Terms, profile:
     const line = paceLine(threshold, r.resetsAt, w.seconds, now, shape)
     const ahead = r.pct - line
     const over = ahead - margin
-    const active = cfg.enabled && cfg.pace_enabled && r.resetsAt > now && r.pct >= cfg.pace_min_used_pct && over > 0
+    const active = pacesWindow(cfg, w.key) && r.resetsAt > now && r.pct >= cfg.pace_min_used_pct && over > 0
     const delaySeconds = active
       ? Math.min(cfg.pace_max_delay_seconds * t.delayFactor, over * cfg.pace_seconds_per_pct * t.delayFactor)
       : 0

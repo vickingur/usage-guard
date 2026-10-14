@@ -9,7 +9,7 @@
   ug on | off            enable / disable the guard
   ug threshold [W PCT]   show, or set, the threshold for window 5h or 7d
   ug pace                show pacing settings
-  ug pace on | off       enable / disable pacing (the threshold hold stays)
+  ug pace on | off [W]   enable / disable pacing, or only window 5h or 7d (the threshold hold stays)
   ug pace mode M         hold (wait until back on pace) or delay (a capped slowdown per call)
   ug pace margin W PCT   how far ahead of the pace line window 5h or 7d may run
   ug pace set KEY VALUE  any numeric pacing or priority setting (see `ug config`)
@@ -41,6 +41,7 @@ import guardlib as g  # noqa: E402
 HERE = Path(__file__).resolve().parent
 WINDOW_ARGS = {"5h": "threshold_5h", "7d": "threshold_7d"}
 MARGIN_ARGS = {"5h": "pace_margin_5h", "7d": "pace_margin_7d"}
+PACE_SWITCH_ARGS = {"5h": "pace_enabled_5h", "7d": "pace_enabled_7d"}
 PACE_SET_KEYS = tuple(k for k, v in g.DEFAULTS.items()
                       if (k.startswith("pace_") or k.startswith("priority_") or k.startswith("borrow_"))
                       and isinstance(v, (int, float)) and not isinstance(v, bool))
@@ -122,6 +123,8 @@ def cmd_pace(args):
     if not args:
         state = paint("on", "32") if cfg["pace_enabled"] else paint("off", "33")
         print(f"pacing     {state}  mode {cfg['pace_mode']}")
+        for window, key in PACE_SWITCH_ARGS.items():
+            print(f"pacing {window:<4}{paint('on', '32') if cfg[key] else paint('off', '33')}")
         for window, key in MARGIN_ARGS.items():
             print(f"margin {window:<4}{cfg[key]:g}% ahead of the pace line")
         for key in PACE_SET_KEYS:
@@ -131,6 +134,12 @@ def cmd_pace(args):
     if verb in ("on", "off") and not rest:
         g.save_config({"pace_enabled": verb == "on"})
         print(f"pacing {paint(verb, '32' if verb == 'on' else '33')}")
+        return 0
+    if verb in ("on", "off") and len(rest) == 1 and rest[0] in PACE_SWITCH_ARGS:
+        g.save_config({PACE_SWITCH_ARGS[rest[0]]: verb == "on"})
+        print(f"{rest[0]} pacing {paint(verb, '32' if verb == 'on' else '33')}")
+        if verb == "on" and not cfg["pace_enabled"]:
+            print("pacing as a whole is off; `ug pace on` turns it on")
         return 0
     if verb == "mode":
         if len(rest) != 1 or rest[0] not in g.PACE_MODES:
@@ -161,7 +170,7 @@ def cmd_pace(args):
         g.save_config({rest[0]: value})
         print(f"{rest[0]} set to {value:g}")
         return 0
-    return fail("usage: ug pace [on|off|mode M|margin W PCT|set KEY VALUE]")
+    return fail("usage: ug pace [on|off [5h|7d]|mode M|margin W PCT|set KEY VALUE]")
 
 
 PROFILE_PRESETS = {
@@ -429,6 +438,9 @@ def cmd_status(args):
         return fail("usage: ug status [--json]")
     state = paint("on", "1;32") if cfg["enabled"] else paint("off", "1;33")
     pacing = paint("on", "32") if cfg["pace_enabled"] else paint("off", "33")
+    off = [window for window, key in PACE_SWITCH_ARGS.items() if not cfg[key]]
+    if cfg["pace_enabled"] and off:
+        pacing += paint(f", {'+'.join(off)} off", "33")
     print(f"guard      {state}   pacing {pacing} ({cfg['pace_mode']})")
 
     claude = rep["claude"]
