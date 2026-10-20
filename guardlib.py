@@ -729,13 +729,19 @@ def codex_trust_entries(doc: dict, hooks_path: Path) -> dict:
     return out
 
 
+# One [hooks.state."<key>"] table and its body, up to the next table header.
+# Codex rewrites config.toml with nested tables indented, so headers and keys
+# may carry leading whitespace.
+_TRUST_BLOCK = r'^[ \t]*\[hooks\.state\."%s"\][ \t]*\n((?:(?![ \t]*\[).*\n?)*)'
+
+
 def codex_trust_state(config_text: str) -> dict:
     """{state key: trust hash} already recorded in a config.toml text."""
     import re
     found = {}
-    for m in re.finditer(r'^\[hooks\.state\."((?:[^"\\]|\\.)*)"\]\s*\n((?:(?!^\[).*\n?)*)', config_text, re.M):
+    for m in re.finditer(_TRUST_BLOCK % r'((?:[^"\\]|\\.)*)', config_text, re.M):
         key = m.group(1).replace('\\"', '"').replace("\\\\", "\\")
-        h = re.search(r'^trusted_hash\s*=\s*"([^"]+)"', m.group(2), re.M)
+        h = re.search(r'^[ \t]*trusted_hash\s*=\s*"([^"]+)"', m.group(2), re.M)
         if h:
             found[key] = h.group(1)
     return found
@@ -771,7 +777,7 @@ def codex_install(script_dir: Path) -> dict:
         import re
         for key in missing:
             # drop a stale block for the same key before appending the fresh one
-            text = re.sub(r'^\[hooks\.state\."' + re.escape(key) + r'"\]\s*\n(?:(?!^\[).*\n?)*', "", text, flags=re.M)
+            text = re.sub(_TRUST_BLOCK % re.escape(key), "", text, flags=re.M)
         if text and not text.endswith("\n"):
             text += "\n"
         for key, h in missing.items():

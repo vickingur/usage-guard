@@ -326,6 +326,23 @@ class CodexTrustTest(CodexFixture):
         self.assertTrue(g.codex_trusted(ROOT))
         self.assertEqual((self.codex / "config.toml").read_text().count("[hooks.state."), 2)
 
+    def test_install_reads_trust_that_codex_rewrote_as_indented_tables(self):
+        self.codex.mkdir()
+        g.codex_install(ROOT)
+        trust = g.codex_trust_state((self.codex / "config.toml").read_text())
+        nested = "[hooks]\n  [hooks.state]\n" + "".join(
+            f'    [hooks.state."{k}"]\n      trusted_hash = "{v}"\n' for k, v in trust.items()) + "\n[tui]\n  x = 1\n"
+        (self.codex / "config.toml").write_text(nested)
+        self.assertTrue(g.codex_trusted(ROOT))
+        self.assertEqual(g.codex_install(ROOT)["trusted_now"], [])
+        stale = nested.replace(next(iter(trust.values())), "sha256:stale", 1)
+        (self.codex / "config.toml").write_text(stale)
+        self.assertEqual(len(g.codex_install(ROOT)["trusted_now"]), 1)
+        text = (self.codex / "config.toml").read_text()
+        self.assertEqual(g.codex_trust_state(text), trust)
+        self.assertEqual(text.count("[hooks.state."), len(trust))  # a repeated table is invalid TOML
+        self.assertIn("[tui]\n  x = 1\n", text)
+
     def test_trusted_is_false_without_hooks_or_without_config(self):
         self.assertFalse(g.codex_trusted(ROOT))
         self.codex.mkdir()
